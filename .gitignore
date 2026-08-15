@@ -1,1 +1,12 @@
-chrome-extension-cpp-desktop-dual-stream-pipeline.pdf
+# Build output and packages produced by the orchestrator
+out/
+dist/
+
+# Local, machine-specific target overrides
+targets/*.local.cfg
+
+# Secrets — STT/LLM credentials are read from the environment, never committed
+.env
+
+*.log
+.DS_Store
