@@ -439,6 +439,56 @@ works and misleads when it does not, so it is not load-bearing.
 
 ---
 
+## 15. The workspace entry point is Python, not a shell script
+
+**Decision.** `dstOMNI/dst.py` runs every step that spans more than one repository:
+toolchain preparation, building, testing, packaging, and lockstep tagging.
+
+**Context.** The project targets Windows, macOS and Linux, so the entry point has to
+run on all three. Python is already a hard requirement — the protocol generator runs
+under it, and Conan and aqtinstall are Python packages — so choosing it adds no
+dependency that is not already installed before anything can be built at all.
+
+**Rejected — a shell script with a PowerShell twin.** The familiar shape, and two
+implementations of the same logic to keep in step. Drift between them is exactly the
+failure this repository exists to prevent, and it would show up as "works on Linux,
+subtly wrong on Windows" — the hardest kind to notice.
+
+**Rejected — driving everything through CMake.** Natural for building and useless for
+the rest: tagging three git repositories and reporting workspace state are not build
+steps, and expressing them in CMake would be a worse language for the job.
+
+**Consequences.**
+
+- Every subprocess is invoked as an argument list with no shell, because quoting rules
+  differ per platform and a path containing a space is entirely ordinary on Windows and
+  macOS.
+- Paths go through `pathlib`, and the virtual environment's executables are looked up in
+  `Scripts` on Windows and `bin` elsewhere.
+- `doctor` exists so a machine can be told what it is missing before a 1.6 GB download
+  begins rather than after it fails.
+
+---
+
+## 16. A target descriptor holds only what differs
+
+**Decision.** `targets/*.cfg` carries the build type, the CPack generator, and the
+loopback port — and nothing else. The build commands are identical on every platform.
+
+**Context.** The temptation with per-target files is to give each platform its own
+command set. There is nothing to put there: CMake and Conan already abstract the
+compiler and the dependencies, so the only genuine differences are which archive format
+a platform's users expect and what to bind.
+
+**Rejected — a richer descriptor per platform.** It would be ceremony imported from a
+system that needed it, describing differences this project does not have. A file that
+exists to look thorough teaches a reader something untrue about where the complexity is.
+
+**Consequence.** The default target is detected from the host, so the common case needs
+no flag at all.
+
+---
+
 ## Pending decisions
 
 None currently open.
