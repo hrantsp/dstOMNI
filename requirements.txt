@@ -1,0 +1,12 @@
+# Build-time Python tooling for the dst workspace.
+#
+#   python3 -m venv .venv
+#   .venv/bin/pip install -r dstOMNI/requirements.txt
+#
+# aqtinstall must live in the same environment as Conan: the qt-official recipe
+# invokes it as `sys.executable -m aqt`, binding it to the interpreter running Conan
+# rather than to whatever `aqt` happens to be first on PATH.
+
+conan~=2.31
+aqtinstall~=3.3
+ninja~=1.13
