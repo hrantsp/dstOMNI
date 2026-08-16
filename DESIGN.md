@@ -367,7 +367,78 @@ all, which would simplify that target. Verified when those machines are in play.
 
 ---
 
+## 13. Transcript ordering uses a finalisation watermark, not a fixed delay
+
+**Decision.** Each stream reports how far it has been finalised. Everything below the
+minimum across open streams is committed, sorted by start time; everything above stays
+in a live zone that may still change. There is no fixed hold time.
+
+```
+finalizedUpTo[stream] = max(start + duration) over that stream's final results
+watermark             = min(finalizedUpTo) across open streams
+commit                = every non-empty final with end <= watermark, sorted by start
+```
+
+**Context — measured, not assumed.** Two concurrent Deepgram connections were driven in
+real time from a shared clock, one carrying a monologue and one a dialogue starting four
+seconds later:
+
+```
+transcription lag (arrival - end of the audio it covers)
+  min 1.29s   median 1.36s   p90 1.45s   max 2.57s
+ordering
+  15 utterances, 1 arrived out of audio order, worst by 0.19s
+```
+
+Both connections show nearly identical, stable lag, so arrival order almost matches
+audio order already. Reordering is real but small.
+
+**The property that makes a watermark possible.** The engine emits final results for
+silence as well as speech — those carry `start` and `duration` but an empty transcript.
+They are filtered from display, yet they still prove how far that stream has been
+finalised. Both streams therefore report progress continuously, whether or not anyone
+is speaking, and the watermark advances on its own.
+
+**Rejected — hold every utterance for a fixed N seconds.** The obvious approach, and
+what was originally planned. Choosing N means trading correctness against latency with
+no way to be right: too small and the transcript still scrambles, too large and it stops
+feeling live. A watermark needs no such constant, and its latency is whatever the engine
+actually costs — about 1.4 s here — rather than a guess.
+
+**Rejected — commit in arrival order.** Simplest, and wrong for exactly the case the
+requirement names: when two people speak close together, the transcript reverses them.
+
+**Consequences.**
+
+- Below the watermark, ordering is provably complete: neither stream can still produce
+  anything earlier, so committed text never has to be rewritten.
+- Latency adapts by itself. A degraded network slows the watermark instead of corrupting
+  the order.
+- A closed stream must be removed from the minimum, or the watermark freezes forever.
+- Interim results must never be promoted directly into committed text. Finals were
+  observed to be *shorter* than the interim preceding them, and to revise words at the
+  start: `"Finding people is my specialty. So, naturally, I work for the"` finalised as
+  `"Finding people is my specialty, so, naturally, I work"`, with `"for the"` moving into
+  the next segment and then being dropped from it.
+
+---
+
+## 14. Speaker diarisation is offered, not promised
+
+**Decision.** Diarisation stays off by default and is exposed as an option. The two
+streams remain the primary separation.
+
+**Context.** The meeting stream carries every remote participant mixed together, so it
+is N speakers rather than one. Deepgram can label them, and on test material it split a
+two-person scene correctly — but on a second scene with two similar voices it collapsed
+both into one speaker.
+
+**Consequence.** The brief's requirement is met by the two streams, which are separated
+by construction rather than by inference. Diarisation refines the meeting side when it
+works and misleads when it does not, so it is not load-bearing.
+
+---
+
 ## Pending decisions
 
-- **Timestamp and ordering model.** How two independently transcribed streams are
-  merged into a conversation that reads in natural order.
+None currently open.
