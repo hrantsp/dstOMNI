@@ -297,8 +297,49 @@ def cmd_setup(args):
     return 0
 
 
-def _preset(target):
-    return f"conan-{target.get('DST_BUILD_TYPE', 'Release').lower()}"
+def _presets(build_type):
+    """What Conan actually generated, rather than what it generates on Linux.
+
+    Preset names depend on the CMake generator, not on us. A single-config generator
+    (Ninja, Unix Makefiles) yields one configure preset per build type — conan-release.
+    A multi-config one (Visual Studio, Xcode) yields a single shared configure preset
+    called conan-default plus separate build presets, and puts the build tree one level
+    up. Assuming the single-config shape is how a Windows build fails on its first
+    command.
+
+    Returns (configurePreset, buildPreset, binaryDir).
+    """
+    import json
+
+    user = DESK / "CMakeUserPresets.json"
+    if not user.exists():
+        fail("no CMake presets yet — run: python dst.py build")
+
+    documents = []
+    root = json.loads(user.read_text())
+    for included in root.get("include", []):
+        path = (DESK / included) if not Path(included).is_absolute() else Path(included)
+        if path.exists():
+            documents.append(json.loads(path.read_text()))
+    if not documents:
+        documents.append(root)
+
+    wanted = f"conan-{build_type.lower()}"
+    configures, builds = {}, set()
+    for document in documents:
+        for preset in document.get("configurePresets", []):
+            configures[preset["name"]] = preset.get("binaryDir")
+        for preset in document.get("buildPresets", []):
+            builds.add(preset["name"])
+
+    configure = (wanted if wanted in configures
+                 else "conan-default" if "conan-default" in configures
+                 else next(iter(configures), None))
+    if configure is None:
+        fail("Conan generated no configure preset; try: python dst.py build --refresh")
+
+    build = wanted if wanted in builds else configure
+    return configure, build, configures.get(configure)
 
 
 def cmd_build(args):
@@ -312,11 +353,13 @@ def cmd_build(args):
     say(f"Resolving dependencies ({build_type})")
     run([conan, "install", ".", "-s", f"build_type={build_type}", "--build=missing"], cwd=DESK)
 
-    say("Configuring")
-    run(["cmake", "--preset", _preset(target)], cwd=DESK)
+    configure, build, _ = _presets(build_type)
 
-    say("Building")
-    run(["cmake", "--build", "--preset", _preset(target)], cwd=DESK)
+    say(f"Configuring ({configure})")
+    run(["cmake", "--preset", configure], cwd=DESK)
+
+    say(f"Building ({build})")
+    run(["cmake", "--build", "--preset", build], cwd=DESK)
 
     say(f"\nBuilt into {DESK / 'bin' / build_type}")
     return 0
@@ -325,8 +368,10 @@ def cmd_build(args):
 def cmd_test(args):
     target = load_target(args.target)
 
+    _, build, _ = _presets(target.get("DST_BUILD_TYPE", "Release"))
+
     say("Desktop unit tests")
-    run(["ctest", "--preset", _preset(target), "--output-on-failure"], cwd=DESK)
+    run(["ctest", "--preset", build, "--output-on-failure"], cwd=DESK)
 
     if shutil.which("node") is None:
         say("\nSkipping the browser wire check: node is not installed.")
@@ -339,9 +384,21 @@ def cmd_test(args):
 
 
 def _binary(target, name):
+    """Multi-config generators put executables in a per-config subdirectory of the
+    build tree; single-config ones put them at its root. Both are checked rather than
+    guessed at from the platform, because the generator is what decides."""
     build_type = target.get("DST_BUILD_TYPE", "Release")
+    _, _, binary_dir = _presets(build_type)
     suffix = ".exe" if WINDOWS else ""
-    return DESK / "bin" / build_type / f"{name}{suffix}"
+
+    roots = [Path(binary_dir)] if binary_dir else []
+    roots += [DESK / "bin" / build_type, DESK / "bin"]
+
+    for root in roots:
+        for candidate in (root / f"{name}{suffix}", root / build_type / f"{name}{suffix}"):
+            if candidate.exists():
+                return candidate
+    return roots[0] / f"{name}{suffix}"
 
 
 def cmd_run(args):
@@ -365,9 +422,11 @@ def cmd_package(args):
     build_type = target.get("DST_BUILD_TYPE", "Release")
     generator = target.get("DST_PACKAGE_GENERATOR", "TGZ")
 
-    build_dir = DESK / "bin" / build_type
-    if not build_dir.exists():
-        fail("nothing built yet — run: python dst.py build")
+    _, _, binary_dir = _presets(build_type)
+    build_dir = Path(binary_dir) if binary_dir else (DESK / "bin" / build_type)
+
+    if not (build_dir / "CMakeCache.txt").exists():
+        fail(f"nothing configured in {build_dir} — run: python dst.py build")
 
     say(f"Packaging with CPack ({generator})")
     run(["cpack", "-G", generator, "-C", build_type], cwd=build_dir)

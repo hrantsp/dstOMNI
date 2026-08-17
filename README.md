@@ -35,6 +35,48 @@ git clone https://github.com/hrantsp/dstOMNI.git
 
 Needs **Python 3.9+**, **CMake 3.24+**, **Git**, and a C++20 compiler.
 
+<details>
+<summary><strong>Windows</strong> — exactly what to install</summary>
+
+Build natively, not under WSL: Chrome runs on Windows and talks to the desktop app over
+loopback, and WSL2 puts the app in a different network namespace. The Qt this project
+uses is `win64_msvc2022_64`, which needs MSVC in any case.
+
+| Install | Why |
+|---|---|
+| [Build Tools for Visual Studio 2022](https://visualstudio.microsoft.com/downloads/), workload **"Desktop development with C++"** | MSVC v143 and the Windows SDK. The full IDE works too but is not needed. |
+| [Python 3.9+](https://www.python.org/downloads/windows/) — tick **"Add python.exe to PATH"** | Runs `dst.py`, Conan, aqtinstall and the protocol generator |
+| [Git for Windows](https://git-scm.com/download/win) | Cloning |
+| [CMake 3.24+](https://cmake.org/download/) | Visual Studio bundles one, but not on PATH outside its own prompt |
+| Google Chrome | Loading the extension |
+
+Then, from an **"x64 Native Tools Command Prompt for VS 2022"** (Start menu — this is
+what puts MSVC on PATH):
+
+```
+python dstOMNI\dst.py doctor
+python dstOMNI\dst.py setup
+python dstOMNI\dst.py build
+python dstOMNI\dst.py run
+```
+
+Node.js is optional, needed only for `dstORCH\tst\wire-check.mjs`.
+
+</details>
+
+<details>
+<summary><strong>macOS</strong> — exactly what to install</summary>
+
+```bash
+xcode-select --install     # Apple clang and the SDK
+brew install cmake python git
+```
+
+Then the same three commands as everywhere else. Qt is fetched as a universal binary,
+so Apple silicon and Intel are both covered.
+
+</details>
+
 ```bash
 python3 dstOMNI/dst.py doctor    # says what is missing before anything is downloaded
 python3 dstOMNI/dst.py setup     # creates .venv, installs Conan, fetches Qt
@@ -244,6 +286,10 @@ and starts cleanly and then fails on the first connection to the transcription s
 **The window says "Recording only — no API key".** A launch outside a terminal inherits
 no environment. Use **Settings…** in the window, or export `DEEPGRAM_API_KEY` and start
 it from a shell.
+
+**Windows: "cmake: command not found" or MSVC not detected.** Use the *x64 Native Tools
+Command Prompt for VS 2022* rather than a plain terminal; a normal prompt has neither
+the compiler nor Visual Studio's CMake on PATH.
 
 **"cannot bind 127.0.0.1:8765".** Another copy is already running, or something else
 holds the port. `dstdesk --selftest` reports it; change the port in Settings or with
