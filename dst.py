@@ -87,9 +87,18 @@ def run(args, cwd=None, check=True, capture=False):
 
 
 def _directory_size(patterns):
+    """Sums the sizes under each pattern.
+
+    glob.glob rather than Path.glob: the latter refuses an absolute pattern, and
+    anchoring one at Path("/") is meaningless on Windows, where the pattern names a
+    drive.
+    """
+    import glob as globbing
+
     total = 0
     for pattern in patterns:
-        for path in Path("/").glob(pattern.lstrip("/")):
+        for match in globbing.glob(pattern):
+            path = Path(match)
             for item in path.rglob("*"):
                 try:
                     if item.is_file():
@@ -255,10 +264,13 @@ def cmd_setup(args):
         say(f"Creating {VENV}")
         run([sys.executable, "-m", "venv", str(VENV)])
 
-    pip = venv_bin("pip")
+    # Through the interpreter, not the pip executable: on Windows pip.exe cannot
+    # replace itself while running, and fails with an error telling you to do exactly
+    # this instead.
+    python = venv_bin("python")
     say("Installing build tooling")
-    run([pip, "install", "-q", "--upgrade", "pip"])
-    run([pip, "install", "-q", "-r", str(OMNI / "requirements.txt")])
+    run([python, "-m", "pip", "install", "-q", "--upgrade", "pip"])
+    run([python, "-m", "pip", "install", "-q", "-r", str(OMNI / "requirements.txt")])
 
     conan = str(venv_bin("conan"))
 
