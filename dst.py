@@ -72,7 +72,7 @@ def tool(name):
     return found if found else None
 
 
-def run(args, cwd=None, check=True, capture=False):
+def run(args, cwd=None, check=True, capture=False, env=None):
     """No shell anywhere: quoting rules differ per platform and a path with a space
     in it is the most ordinary thing in the world on Windows and macOS."""
     result = subprocess.run(
@@ -80,6 +80,7 @@ def run(args, cwd=None, check=True, capture=False):
         cwd=str(cwd) if cwd else None,
         text=True,
         capture_output=capture,
+        env=env,
     )
     if check and result.returncode != 0:
         if capture and result.stderr:
@@ -524,8 +525,22 @@ def cmd_run(args):
     if args.extra:
         command += args.extra
 
+    # Windows resolves DLLs from the executable's directory and then PATH, with no
+    # equivalent of the search path baked into ELF and Mach-O binaries, so a build-tree
+    # binary cannot find Qt on its own. CMake recorded the directory beside it.
+    environment = None
+    marker = binary.parent / "qt-runtime-dir.txt"
+    if WINDOWS:
+        if marker.exists():
+            environment = dict(os.environ)
+            environment["PATH"] = (marker.read_text().strip() + os.pathsep
+                                  + environment.get("PATH", ""))
+        else:
+            say(f"  note  {marker.name} is missing, so Qt may not be found. It is"
+                " written by the build; re-run: python dst.py build")
+
     say(f"Running {binary.name}")
-    return run(command, check=False).returncode
+    return run(command, check=False, env=environment).returncode
 
 
 def cmd_package(args):

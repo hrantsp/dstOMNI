@@ -361,9 +361,9 @@ runtime with an error that does not name the cause.
 download rather than a build. Packaging via CPack must place the OpenSSL runtime beside
 the executable on Windows.
 
-**Revised by decision 17,** which stops requiring OpenSSL on Windows on the expectation
-that Qt ships a Schannel backend there. macOS remains as described: Qt offers only the
-OpenSSL backend, and the system copy is LibreSSL.
+**Revised by decision 17,** which stops requiring OpenSSL on Windows: Qt ships a
+Schannel backend there. macOS remains as described: Qt offers only the OpenSSL backend,
+and the system copy is LibreSSL.
 
 ---
 
@@ -496,11 +496,10 @@ Schannel backend uses the platform's own TLS stack. This revises decision 12, wh
 required it unconditionally.
 
 **Context.** Decision 12 left one thing to verify on hardware: which TLS backends the
-official Qt packages actually ship. Windows `qtbase` is expected to carry a Schannel
-backend alongside the OpenSSL one, so nothing needs shipping and nothing needs building
-— `--selftest` naming `schannel` on the target machine is what confirms it, and until
-that has been read on hardware this rests on how Qt configures its Windows packages
-rather than on measurement. It also
+official Qt packages actually ship. Windows `qtbase` does carry `qschannelbackend.dll`
+alongside `qopensslbackend.dll` — read from the installed package on a Windows machine,
+not inferred — so nothing needs shipping and nothing needs building. Which backend Qt
+selects at runtime is reported by `--selftest`. It also
 predicted that OpenSSL "costs a download rather than a build", and that prediction was
 wrong on Windows: ConanCenter publishes no prebuilt binary for every MSVC release, so
 `--build=missing` compiled OpenSSL from source — thousands of files, and the largest
