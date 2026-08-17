@@ -42,6 +42,7 @@ ORCH = ROOT / "dstORCH"
 VENV = ROOT / ".venv"
 
 WINDOWS = platform.system() == "Windows"
+MACOS   = platform.system() == "Darwin"
 
 
 # ── plumbing ─────────────────────────────────────────────────────────────────
@@ -507,10 +508,19 @@ def _binary(target, name):
     roots = [Path(binary_dir)] if binary_dir else []
     roots += [DESK / "bin" / build_type, DESK / "bin"]
 
+    # dstdesk is a bundle on macOS, so the executable is buried inside it rather than
+    # sitting in the build directory. Listed alongside the plain names rather than
+    # branching on the platform: dstsim is not a bundle, and a future target might not
+    # be either, so what is looked for is a file that exists.
+    names = [f"{name}{suffix}"]
+    if MACOS:
+        names.append(f"{name}.app/Contents/MacOS/{name}")
+
     for root in roots:
-        for candidate in (root / f"{name}{suffix}", root / build_type / f"{name}{suffix}"):
-            if candidate.exists():
-                return candidate
+        for leaf in names:
+            for candidate in (root / leaf, root / build_type / leaf):
+                if candidate.exists():
+                    return candidate
     return roots[0] / f"{name}{suffix}"
 
 
