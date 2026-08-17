@@ -21,11 +21,13 @@ to prevent. See decision 15 in DESIGN.md.
 """
 
 import argparse
+import json
 import os
 import platform
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import sys
@@ -86,36 +88,19 @@ def run(args, cwd=None, check=True, capture=False):
     return result
 
 
-def _directory_size(patterns):
-    """Sums the sizes under each pattern.
+def run_with_progress(args, label, cwd=None):
+    """Runs a long command, showing that it is alive and what it last said.
 
-    glob.glob rather than Path.glob: the latter refuses an absolute pattern, and
-    anchoring one at Path("/") is meaningless on Windows, where the pattern names a
-    drive.
-    """
-    import glob as globbing
+    aqtinstall logs only when a whole archive finishes, so a large one can be quiet for
+    minutes. An earlier version of this sized the directory being filled, which was
+    wrong four ways at once: it summed the download and the package copy as though they
+    were separate progress, matched leftover packages from previous runs, went negative
+    when Conan deleted the tree its baseline was taken from, and — worst — walked tens
+    of thousands of files every two seconds, which on Windows contends for the disk with
+    the install it is measuring. A clock that costs nothing is better than a number that
+    is wrong and slows the thing it reports on.
 
-    total = 0
-    for pattern in patterns:
-        for match in globbing.glob(pattern):
-            path = Path(match)
-            for item in path.rglob("*"):
-                try:
-                    if item.is_file():
-                        total += item.stat().st_size
-                except OSError:
-                    pass  # files vanish mid-extraction; a sampled figure is enough
-    return total
-
-
-def run_with_progress(args, label, watch, cwd=None):
-    """Runs a long command while reporting how much has arrived.
-
-    aqtinstall logs only when a whole module finishes, so a large one is
-    indistinguishable from a hang — and the module in question is a few hundred
-    megabytes. There is no progress option to enable, so the size of the directory it
-    is filling is the only signal available. Output is kept and shown only on failure,
-    so the counter is not buried under a build log.
+    Output is kept and shown only on failure, so the line is not buried under a log.
     """
     log = []
     latest = [""]   # most recent output line, shown beside the counter
@@ -131,25 +116,29 @@ def run_with_progress(args, label, watch, cwd=None):
     started = time.monotonic()
     live = sys.stdout.isatty()
 
-    # Baselined, so the figure is what this run has fetched. Reporting the directory's
-    # total instead makes an interrupted earlier attempt look like instant progress and
-    # then like a stall, which is worse than no counter at all.
-    baseline = _directory_size(watch)
-
     def report():
-        while not stop.wait(2.0):
-            megabytes = max(0, _directory_size(watch) - baseline) / (1024 * 1024)
-            elapsed = int(time.monotonic() - started)
+        spoken, at = None, 0.0
+        while not stop.wait(1.0):
+            seconds = time.monotonic() - started
+            elapsed = int(seconds)
 
-            # The byte count is a guess about where the tool writes; the tool's own last
-            # line is not. Showing both means a wrong guess reads as a wrong number
-            # rather than as a hang, which is the failure this reporter exists to avoid.
-            note = latest[0][:60]
-            line = (f"  {label}: {megabytes:,.0f} MB  ({elapsed // 60}m{elapsed % 60:02d}s)"
+            # The tool's own last line is the only honest progress signal available:
+            # aqtinstall logs when an archive finishes and says nothing in between, so
+            # the largest one is several quiet minutes. Everything else here would be a
+            # guess about where it writes, which is the mistake this replaced.
+            note = latest[0][:70]
+            line = (f"  {label}: {elapsed // 60}m{elapsed % 60:02d}s"
                     + (f"  {note}" if note else ""))
-            # Overwrite in place on a terminal; append lines when piped to a file,
-            # where carriage returns would produce one unreadable smear.
-            print(f"\r{line:<110}" if live else line, end="" if live else "\n", flush=True)
+
+            if live:
+                # Overwrite in place; a terminal shows one line that keeps moving.
+                print(f"\r{line:<110}", end="", flush=True)
+            elif note != spoken or seconds - at >= 30:
+                # Piped to a file, the same heartbeat appends. Print when the tool
+                # actually says something new, and otherwise sparely, just often enough
+                # to show the run is alive — a line a second buries the log it is in.
+                print(line, flush=True)
+                spoken, at = note, seconds
 
     reporter = threading.Thread(target=report, daemon=True)
     reporter.start()
@@ -260,13 +249,15 @@ def cmd_doctor(args):
         if enabled:
             say("  ok    long paths are enabled")
         else:
-            # Qt's tree exceeds MAX_PATH, and without this the extraction is silently
-            # incomplete: the failure surfaces much later and points nowhere near here.
-            say("  MISS  long paths are disabled — Qt will not extract completely.")
-            say("        In an Administrator prompt, then reboot:")
+            # Advisory, not a blocker. Measured, the installed tree reaches about 200
+            # characters against the 260-character limit, so this is headroom rather
+            # than a requirement — and failing a reviewer's first command over a
+            # registry setting they do not need would be worse than the problem.
+            say("  note  long paths are disabled. Not required: the Qt install used")
+            say("        here stays within the 260-character limit. Enable it only if")
+            say("        an extraction fails on a path length:")
             say(r'        reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" '
                 r"/v LongPathsEnabled /t REG_DWORD /d 1 /f")
-            missing.append("long paths")
 
     say("\nQt package")
     conan = tool("conan")
@@ -285,9 +276,15 @@ def cmd_doctor(args):
     return 0
 
 
-def qt_in_cache(conan):
-    found = run([conan, "list", "qt-official/*:*"], check=False, capture=True)
-    return "qt-official" in found.stdout
+def qt_reference(conan):
+    """Exports the recipe and returns the exact reference, revision included.
+
+    Exporting is cheap — it copies the recipe into the cache and builds nothing — and
+    it is what lets Conan itself answer the "is it already built?" question below.
+    """
+    exported = run([conan, "export", str(DESK / "rec" / "qt-official"),
+                    "--format=json"], capture=True)
+    return json.loads(exported.stdout)["reference"]
 
 
 def cmd_setup(args):
@@ -321,28 +318,25 @@ def cmd_setup(args):
         say("Detecting a Conan profile")
         run([conan, "profile", "detect", "--force"])
 
-    # conan create always rebuilds, so without this check a second setup spends 1.6 GB
-    # and ten minutes reproducing a package that is already in the cache. Running setup
-    # twice is a completely ordinary thing to do.
-    if qt_in_cache(conan) and not args.force:
-        say("Qt is already in the local cache; skipping the download. "
-            "Use --force to fetch it again.")
-    else:
-        say("Fetching the official Qt binaries — about 1.6 GB, a few minutes on a fast")
-        say("connection. qtdeclarative and qttools are the large ones.")
+    # Installed by reference rather than created. `conan create` always rebuilds, so it
+    # needed a guard, and the guard asked whether *a* Qt was cached — a question that
+    # gives the wrong answer the moment the recipe's options change, because the package
+    # already there was built from different ones. Conan compares the full package id
+    # and answers exactly: present means present, and it is a no-op in about a second.
+    reference = qt_reference(conan)
+    say("Fetching the official Qt binaries if they are not already cached — about")
+    say("200 MB, since only the modules this application links are installed.")
+    say("aqtinstall reports an archive only once it has finished, and qtbase is by far")
+    say("the largest, so expect several quiet minutes with only the clock moving. On")
+    say("Windows, Conan then copies the tree into its package folder, which is slower")
+    say("still. Neither is a hang.")
+    with tempfile.TemporaryDirectory() as scratch:
         run_with_progress(
-            [conan, "create", str(DESK / "rec" / "qt-official")],
+            [conan, "install", f"--requires={reference}",
+             # --force means this one package, not everything it might pull in.
+             "--build=qt-official/*" if args.force else "--build=missing",
+             "--output-folder", scratch],
             label="Qt",
-            # Two directories, because there are two long phases and only the first
-            # is a download. Conan then copies the whole tree into the package folder,
-            # which on Windows means tens of thousands of file creations and is the
-            # slower half — watching only the download leaves that time looking idle.
-            #
-            # qt-* rather than a longer prefix: Conan truncates the package name
-            # differently per platform — qt-off… on Linux, qt-of… on Windows — and a
-            # pattern that matches one silently reports zero on the other.
-            watch=[str(Path.home() / ".conan2" / "p" / "b" / "qt-*" / "b" / "qt"),
-                   str(Path.home() / ".conan2" / "p" / "b" / "qt-*" / "p")],
         )
 
     say("\nReady. Next: python dst.py build")
