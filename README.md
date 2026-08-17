@@ -50,6 +50,20 @@ uses is `win64_msvc2022_64`, which needs MSVC in any case.
 | [CMake 3.24+](https://cmake.org/download/) | Visual Studio bundles one, but not on PATH outside its own prompt |
 | Google Chrome | Loading the extension |
 
+**Enable long paths first.** Qt's tree is deep enough that
+`…\qt\6.8.3\msvc2022_64\qml\QtQuick\Controls\…` exceeds Windows' 260-character
+`MAX_PATH` limit, and with long paths disabled the extraction is silently incomplete —
+the build then fails much later, for reasons that point nowhere near the cause. In an
+**Administrator** prompt, then reboot:
+
+```
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f
+```
+
+Check it with `reg query "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled`;
+`0x1` is what you want. This is a requirement for building any Qt application on
+Windows, not a peculiarity of this project.
+
 Then, from an **"x64 Native Tools Command Prompt for VS 2022"** (Start menu — this is
 what puts MSVC on PATH):
 
@@ -83,7 +97,10 @@ python3 dstOMNI/dst.py setup     # creates .venv, installs Conan, fetches Qt
 ```
 
 `setup` downloads the official Qt binaries (~1.6 GB) into the local Conan cache,
-reporting progress as it goes. It is slow once and takes about a second on every run
+reporting progress as it goes. Expect roughly five minutes on Linux and macOS, and
+**fifteen to twenty on Windows** — the download is the same, but Conan then copies the
+tree into its package folder, and tens of thousands of small file creations with a
+virus scanner watching is slow there. It is slow once and takes about a second on every run
 after that: it skips the download if the package is already cached and leaves an
 existing Conan profile alone. `--force` redoes both. Everything it installs lives in
 `.venv/` at the workspace root; nothing is installed system-wide.

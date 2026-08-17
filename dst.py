@@ -118,6 +118,7 @@ def run_with_progress(args, label, watch, cwd=None):
     so the counter is not buried under a build log.
     """
     log = []
+    latest = [""]   # most recent output line, shown beside the counter
     process = subprocess.Popen(
         [str(a) for a in args],
         cwd=str(cwd) if cwd else None,
@@ -139,16 +140,25 @@ def run_with_progress(args, label, watch, cwd=None):
         while not stop.wait(2.0):
             megabytes = max(0, _directory_size(watch) - baseline) / (1024 * 1024)
             elapsed = int(time.monotonic() - started)
-            line = f"  {label}: {megabytes:,.0f} MB  ({elapsed // 60}m{elapsed % 60:02d}s)"
+
+            # The byte count is a guess about where the tool writes; the tool's own last
+            # line is not. Showing both means a wrong guess reads as a wrong number
+            # rather than as a hang, which is the failure this reporter exists to avoid.
+            note = latest[0][:60]
+            line = (f"  {label}: {megabytes:,.0f} MB  ({elapsed // 60}m{elapsed % 60:02d}s)"
+                    + (f"  {note}" if note else ""))
             # Overwrite in place on a terminal; append lines when piped to a file,
             # where carriage returns would produce one unreadable smear.
-            print(f"\r{line}    " if live else line, end="" if live else "\n", flush=True)
+            print(f"\r{line:<110}" if live else line, end="" if live else "\n", flush=True)
 
     reporter = threading.Thread(target=report, daemon=True)
     reporter.start()
 
     for line in process.stdout:
         log.append(line)
+        stripped = line.strip()
+        if stripped:
+            latest[0] = stripped
 
     process.wait()
     stop.set()
@@ -237,6 +247,27 @@ def cmd_doctor(args):
         version = run(command, check=False, capture=True).stdout.strip().splitlines()
         say(f"  ok    {name:6s} {version[0] if version else ''}")
 
+    if WINDOWS:
+        say("\nWindows")
+        try:
+            import winreg
+            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                 r"SYSTEM\CurrentControlSet\Control\FileSystem")
+            enabled = winreg.QueryValueEx(key, "LongPathsEnabled")[0]
+        except OSError:
+            enabled = 0
+
+        if enabled:
+            say("  ok    long paths are enabled")
+        else:
+            # Qt's tree exceeds MAX_PATH, and without this the extraction is silently
+            # incomplete: the failure surfaces much later and points nowhere near here.
+            say("  MISS  long paths are disabled — Qt will not extract completely.")
+            say("        In an Administrator prompt, then reboot:")
+            say(r'        reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" '
+                r"/v LongPathsEnabled /t REG_DWORD /d 1 /f")
+            missing.append("long paths")
+
     say("\nQt package")
     conan = tool("conan")
     if conan is None:
@@ -302,7 +333,16 @@ def cmd_setup(args):
         run_with_progress(
             [conan, "create", str(DESK / "rec" / "qt-official")],
             label="Qt",
-            watch=[str(Path.home() / ".conan2/p/b/qt-off*/b/qt")],
+            # Two directories, because there are two long phases and only the first
+            # is a download. Conan then copies the whole tree into the package folder,
+            # which on Windows means tens of thousands of file creations and is the
+            # slower half — watching only the download leaves that time looking idle.
+            #
+            # qt-* rather than a longer prefix: Conan truncates the package name
+            # differently per platform — qt-off… on Linux, qt-of… on Windows — and a
+            # pattern that matches one silently reports zero on the other.
+            watch=[str(Path.home() / ".conan2" / "p" / "b" / "qt-*" / "b" / "qt"),
+                   str(Path.home() / ".conan2" / "p" / "b" / "qt-*" / "p")],
         )
 
     say("\nReady. Next: python dst.py build")
