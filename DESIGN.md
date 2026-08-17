@@ -516,8 +516,33 @@ Schannel.
 
 **Consequences.** The dependency graph now differs by platform, so a build failure on
 one target can be invisible on another — the argument for testing on hardware rather
-than reasoning about it. `--selftest` reports the active backend by name, which is how
-this was confirmed rather than assumed.
+than reasoning about it. `--selftest` reports the active backend by name, and on Windows
+10.0.19045 with no OpenSSL present it reads `Secure Channel`, which is how this was
+confirmed rather than assumed.
+
+---
+
+## 18. The build tree is made runnable on Windows, not just packaged
+
+**Decision.** A post-build step runs `windeployqt` on the Windows build, so the
+executable in `bin/Release` starts on its own.
+
+**Context.** ELF and Mach-O binaries carry a search path and start straight from the
+build tree. Windows binaries do not, and the first thing anyone does with a freshly
+built application is double-click it. Two weaker fixes were tried first and are worth
+recording because each fails in a way that points away from the cause: putting Qt on
+`PATH` fixes `dst.py run` and leaves double-clicking broken, and copying the linked DLLs
+beside the executable moves the failure from a missing `Qt6Widgets.dll` to a missing
+platform plugin, because Qt resolves plugins relative to `Qt6Core.dll` and that copy
+changes where it looks.
+
+**Rejected — telling the reviewer to run the packaged build instead.** Accurate, and it
+answers a reasonable action with an instruction rather than making the action work. The
+build tree is where a reviewer spends their time.
+
+**Consequences.** Windows builds carry a copy of the Qt runtime in the build tree, which
+costs disk and a few seconds on each relink. The `PATH` mechanism stays as the fallback
+for a Qt install without `windeployqt`.
 
 ---
 

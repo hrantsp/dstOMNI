@@ -115,12 +115,11 @@ python3 dstOMNI/dst.py run
 A window opens and waits for the extension. `build` prints one progress line rather than
 the compiler's output, which is kept and shown if a step fails; `--verbose` streams it.
 
-**On Windows, start it through `dst.py run`** rather than by launching
-`bin\Release\dstdesk.exe` directly. Windows resolves DLLs from the executable's own
+On Windows the build copies the Qt runtime beside `bin\Release\dstdesk.exe`, so it can
+also be started by double-clicking it. Windows resolves DLLs from the executable's own
 directory and then `PATH`, with no equivalent of the search path that ELF and Mach-O
-binaries carry, so the freshly built binary reports `Qt6Widgets.dll was not found` on
-its own. `dst.py run` puts Qt's directory on `PATH` first. A packaged build
-(`dst.py package`) carries its own copies and needs none of this.
+binaries carry, so without that copy the binary reports `Qt6Widgets.dll was not found`.
+`dst.py run` works either way — it puts Qt's directory on `PATH` itself.
 
 ### 4. Load the extension
 
