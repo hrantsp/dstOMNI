@@ -449,16 +449,29 @@ def cmd_build(args):
     if conan is None:
         fail("conan not found — run: python dst.py setup")
 
+    def step(label, argv):
+        """Quiet by default.
+
+        A dependency Conan has to build from source prints thousands of compiler lines,
+        and only the last one says where it has got to. The whole log is kept and shown
+        if the step fails, which is when it is worth reading; --verbose streams it.
+        """
+        if args.verbose:
+            run(argv, cwd=DESK)
+        else:
+            run_with_progress(argv, label=label, cwd=DESK)
+
     say(f"Resolving dependencies ({build_type})")
-    run([conan, "install", ".", "-s", f"build_type={build_type}", "--build=missing"], cwd=DESK)
+    step("Dependencies",
+         [conan, "install", ".", "-s", f"build_type={build_type}", "--build=missing"])
 
     configure, build, _ = _presets(build_type)
 
     say(f"Configuring ({configure})")
-    run(["cmake", "--preset", configure], cwd=DESK)
+    step("Configure", ["cmake", "--preset", configure])
 
     say(f"Building ({build})")
-    run(["cmake", "--build", "--preset", build], cwd=DESK)
+    step("Compile", ["cmake", "--build", "--preset", build])
 
     say(f"\nBuilt into {DESK / 'bin' / build_type}")
     return 0
@@ -840,7 +853,10 @@ def build_parser():
                               help="redo work already done: re-detect the Conan profile "
                                    "and fetch Qt again")
     setup_parser.set_defaults(fn=cmd_setup)
-    sub.add_parser("build", help="build the desktop application").set_defaults(fn=cmd_build)
+    build_parser = sub.add_parser("build", help="build the desktop application")
+    build_parser.add_argument("-v", "--verbose", action="store_true",
+                              help="stream compiler output instead of a progress line")
+    build_parser.set_defaults(fn=cmd_build)
     sub.add_parser("test", help="run the tests").set_defaults(fn=cmd_test)
     # No passthrough argument is declared: everything after `run` is collected in
     # order by parse_known_args below. Declaring a positional would split the tokens

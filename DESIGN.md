@@ -361,9 +361,9 @@ runtime with an error that does not name the cause.
 download rather than a build. Packaging via CPack must place the OpenSSL runtime beside
 the executable on Windows.
 
-**Still to verify on hardware:** which TLS backends the Windows and macOS official Qt
-packages actually ship. Windows Qt may include a Schannel backend needing no OpenSSL at
-all, which would simplify that target. Verified when those machines are in play.
+**Revised by decision 17,** which stops requiring OpenSSL on Windows on the expectation
+that Qt ships a Schannel backend there. macOS remains as described: Qt offers only the
+OpenSSL backend, and the system copy is LibreSSL.
 
 ---
 
@@ -486,6 +486,39 @@ exists to look thorough teaches a reader something untrue about where the comple
 
 **Consequence.** The default target is detected from the host, so the common case needs
 no flag at all.
+
+---
+
+## 17. OpenSSL is required per platform, not everywhere
+
+**Decision.** `openssl` is required on Linux and macOS and not on Windows, where Qt's
+Schannel backend uses the platform's own TLS stack. This revises decision 12, which
+required it unconditionally.
+
+**Context.** Decision 12 left one thing to verify on hardware: which TLS backends the
+official Qt packages actually ship. Windows `qtbase` is expected to carry a Schannel
+backend alongside the OpenSSL one, so nothing needs shipping and nothing needs building
+— `--selftest` naming `schannel` on the target machine is what confirms it, and until
+that has been read on hardware this rests on how Qt configures its Windows packages
+rather than on measurement. It also
+predicted that OpenSSL "costs a download rather than a build", and that prediction was
+wrong on Windows: ConanCenter publishes no prebuilt binary for every MSVC release, so
+`--build=missing` compiled OpenSSL from source — thousands of files, and the largest
+single cost in a first build by a wide margin.
+
+**Rejected — pinning `compiler.version` to one with prebuilt binaries.** It would buy a
+download by lying about the compiler in use, and the lie surfaces later as an ABI
+mismatch that names nothing relevant.
+
+**Rejected — keeping OpenSSL everywhere for uniformity.** One dependency graph across
+platforms is genuinely easier to reason about, but it charges every Windows reviewer a
+long from-source build for a library the platform will not even load in preference to
+Schannel.
+
+**Consequences.** The dependency graph now differs by platform, so a build failure on
+one target can be invisible on another — the argument for testing on hardware rather
+than reasoning about it. `--selftest` reports the active backend by name, which is how
+this was confirmed rather than assumed.
 
 ---
 
