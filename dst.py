@@ -88,6 +88,28 @@ def run(args, cwd=None, check=True, capture=False):
     return result
 
 
+def _terminate_tree(process):
+    """Ends the child and everything it started.
+
+    Conan runs aqtinstall, which runs download threads of its own, so ending only the
+    process we hold leaves the download going with nothing reading it. Windows has no
+    process group to signal, hence taskkill and its /T. On POSIX the terminal has
+    already delivered the interrupt to the whole foreground group, so terminate() here
+    is a backstop for a child that ignored it.
+    """
+    if process.poll() is not None:
+        return
+    if WINDOWS:
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                       capture_output=True)
+    else:
+        process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+
+
 def run_with_progress(args, label, cwd=None):
     """Runs a long command, showing that it is alive and what it last said.
 
@@ -143,13 +165,37 @@ def run_with_progress(args, label, cwd=None):
     reporter = threading.Thread(target=report, daemon=True)
     reporter.start()
 
-    for line in process.stdout:
-        log.append(line)
-        stripped = line.strip()
-        if stripped:
-            latest[0] = stripped
+    def drain():
+        for line in process.stdout:
+            log.append(line)
+            stripped = line.strip()
+            if stripped:
+                latest[0] = stripped
 
-    process.wait()
+    # Reading the pipe belongs on its own thread so the main one can sit in a timed
+    # wait. Python runs a signal handler between bytecodes and never during a blocking
+    # read, so a main thread parked on the pipe swallows Ctrl+C entirely: the download
+    # carries on and the only way out is closing the window. Waking twice a second
+    # costs nothing and makes the interrupt land.
+    reader = threading.Thread(target=drain, daemon=True)
+    reader.start()
+
+    try:
+        while True:
+            try:
+                process.wait(timeout=0.5)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+    except KeyboardInterrupt:
+        stop.set()
+        if live:
+            print()
+        say(f"Stopping {label}…")
+        _terminate_tree(process)
+        fail(f"{label} interrupted")
+
+    reader.join(timeout=3)
     stop.set()
     reporter.join(timeout=3)
     if live:
@@ -266,7 +312,14 @@ def cmd_doctor(args):
         # reads like two separate problems.
         say("  MISS  conan is not available, so Qt cannot be checked")
     else:
-        say("  ok    qt-official is in the local cache" if qt_in_cache(conan)
+        # Deliberately name-only, and worded to match. doctor is a read-only report of
+        # what is on the machine, so it does not export the recipe to work out this
+        # configuration's package id — setup does that and decides precisely. Saying
+        # "a build of" keeps the weaker claim honest rather than implying the cached
+        # package is the one this recipe currently describes.
+        cached = run([conan, "list", "qt-official/*:*"], check=False, capture=True)
+        say("  ok    a build of qt-official is in the local cache"
+            if "qt-official" in cached.stdout
             else "  MISS  qt-official — run: python dst.py setup")
 
     if missing:
