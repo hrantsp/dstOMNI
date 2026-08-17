@@ -40,9 +40,11 @@ python3 dstOMNI/dst.py doctor    # says what is missing before anything is downl
 python3 dstOMNI/dst.py setup     # creates .venv, installs Conan, fetches Qt
 ```
 
-`setup` downloads the official Qt binaries (~1.6 GB) into the local Conan cache. It is
-slow once and instant afterwards. Everything it installs lives in `.venv/` at the
-workspace root; nothing is installed system-wide.
+`setup` downloads the official Qt binaries (~1.6 GB) into the local Conan cache,
+reporting progress as it goes. It is slow once and takes about a second on every run
+after that: it skips the download if the package is already cached and leaves an
+existing Conan profile alone. `--force` redoes both. Everything it installs lives in
+`.venv/` at the workspace root; nothing is installed system-wide.
 
 ### 3. Build and run
 

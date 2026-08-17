@@ -10,3 +10,8 @@ targets/*.local.cfg
 
 *.log
 .DS_Store
+
+# Left behind when dst.py is imported rather than run — the completion and progress
+# helpers are exercised that way from tests.
+__pycache__/
+*.pyc

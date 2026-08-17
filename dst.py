@@ -26,6 +26,8 @@ import platform
 import re
 import shutil
 import subprocess
+import threading
+import time
 import sys
 from pathlib import Path
 
@@ -82,6 +84,72 @@ def run(args, cwd=None, check=True, capture=False):
             print(result.stderr, file=sys.stderr)
         fail(f"command failed ({result.returncode}): {' '.join(str(a) for a in args)}")
     return result
+
+
+def _directory_size(patterns):
+    total = 0
+    for pattern in patterns:
+        for path in Path("/").glob(pattern.lstrip("/")):
+            for item in path.rglob("*"):
+                try:
+                    if item.is_file():
+                        total += item.stat().st_size
+                except OSError:
+                    pass  # files vanish mid-extraction; a sampled figure is enough
+    return total
+
+
+def run_with_progress(args, label, watch, cwd=None):
+    """Runs a long command while reporting how much has arrived.
+
+    aqtinstall logs only when a whole module finishes, so a large one is
+    indistinguishable from a hang — and the module in question is a few hundred
+    megabytes. There is no progress option to enable, so the size of the directory it
+    is filling is the only signal available. Output is kept and shown only on failure,
+    so the counter is not buried under a build log.
+    """
+    log = []
+    process = subprocess.Popen(
+        [str(a) for a in args],
+        cwd=str(cwd) if cwd else None,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+
+    stop = threading.Event()
+    started = time.monotonic()
+    live = sys.stdout.isatty()
+
+    # Baselined, so the figure is what this run has fetched. Reporting the directory's
+    # total instead makes an interrupted earlier attempt look like instant progress and
+    # then like a stall, which is worse than no counter at all.
+    baseline = _directory_size(watch)
+
+    def report():
+        while not stop.wait(2.0):
+            megabytes = max(0, _directory_size(watch) - baseline) / (1024 * 1024)
+            elapsed = int(time.monotonic() - started)
+            line = f"  {label}: {megabytes:,.0f} MB  ({elapsed // 60}m{elapsed % 60:02d}s)"
+            # Overwrite in place on a terminal; append lines when piped to a file,
+            # where carriage returns would produce one unreadable smear.
+            print(f"\r{line}    " if live else line, end="" if live else "\n", flush=True)
+
+    reporter = threading.Thread(target=report, daemon=True)
+    reporter.start()
+
+    for line in process.stdout:
+        log.append(line)
+
+    process.wait()
+    stop.set()
+    reporter.join(timeout=3)
+    if live:
+        print()
+
+    if process.returncode != 0:
+        print("".join(log[-40:]), file=sys.stderr)
+        fail(f"{label} failed ({process.returncode})")
 
 
 def git(repo, *args, check=True, capture=True):
@@ -163,18 +231,23 @@ def cmd_doctor(args):
     say("\nQt package")
     conan = tool("conan")
     if conan is None:
+        # Already counted by the toolchain check above; naming it twice in the summary
+        # reads like two separate problems.
         say("  MISS  conan is not available, so Qt cannot be checked")
-        missing.append("conan")
     else:
-        found = run([conan, "list", "qt-official/*", "-c"], check=False, capture=True)
-        say("  ok    qt-official is in the local cache" if "qt-official" in found.stdout
+        say("  ok    qt-official is in the local cache" if qt_in_cache(conan)
             else "  MISS  qt-official — run: python dst.py setup")
 
     if missing:
-        say(f"\nMissing: {', '.join(missing)}. Run: python dst.py setup")
+        say(f"\nMissing: {', '.join(dict.fromkeys(missing))}. Run: python dst.py setup")
         return 1
     say("\nEverything required is present.")
     return 0
+
+
+def qt_in_cache(conan):
+    found = run([conan, "list", "qt-official/*:*"], check=False, capture=True)
+    return "qt-official" in found.stdout
 
 
 def cmd_setup(args):
@@ -188,11 +261,37 @@ def cmd_setup(args):
     run([pip, "install", "-q", "-r", str(OMNI / "requirements.txt")])
 
     conan = str(venv_bin("conan"))
-    say("Detecting a Conan profile")
-    run([conan, "profile", "detect", "--force"])
 
-    say("Building the Qt package (downloads official binaries; slow the first time)")
-    run([conan, "create", str(DESK / "rec" / "qt-official")])
+    # Asked, not assumed. Conan's home is CONAN_HOME when set and differs by platform
+    # otherwise, so a hardcoded ~/.conan2 finds a profile that the build will not use —
+    # setup then skips detection and the build fails for want of a profile.
+    home = run([conan, "config", "home"], check=False, capture=True).stdout.strip()
+    if not home:
+        home = str(Path.home() / ".conan2")
+
+    # --force overwrites an existing profile, and a profile is a thing people edit by
+    # hand — pinning a compiler version, say. Re-running setup should not destroy that.
+    profile = Path(home) / "profiles" / "default"
+    if profile.exists() and not args.force:
+        say(f"Using the existing Conan profile at {profile}")
+    else:
+        say("Detecting a Conan profile")
+        run([conan, "profile", "detect", "--force"])
+
+    # conan create always rebuilds, so without this check a second setup spends 1.6 GB
+    # and ten minutes reproducing a package that is already in the cache. Running setup
+    # twice is a completely ordinary thing to do.
+    if qt_in_cache(conan) and not args.force:
+        say("Qt is already in the local cache; skipping the download. "
+            "Use --force to fetch it again.")
+    else:
+        say("Fetching the official Qt binaries — about 1.6 GB, a few minutes on a fast")
+        say("connection. qtdeclarative and qttools are the large ones.")
+        run_with_progress(
+            [conan, "create", str(DESK / "rec" / "qt-official")],
+            label="Qt",
+            watch=[str(Path.home() / ".conan2/p/b/qt-off*/b/qt")],
+        )
 
     say("\nReady. Next: python dst.py build")
     return 0
@@ -578,7 +677,11 @@ def build_parser():
     # error, which is more useful than being told what one did wrong.
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("doctor", help="report what this machine is missing").set_defaults(fn=cmd_doctor)
-    sub.add_parser("setup", help="prepare the toolchain, once per machine").set_defaults(fn=cmd_setup)
+    setup_parser = sub.add_parser("setup", help="prepare the toolchain, once per machine")
+    setup_parser.add_argument("--force", action="store_true",
+                              help="redo work already done: re-detect the Conan profile "
+                                   "and fetch Qt again")
+    setup_parser.set_defaults(fn=cmd_setup)
     sub.add_parser("build", help="build the desktop application").set_defaults(fn=cmd_build)
     sub.add_parser("test", help="run the tests").set_defaults(fn=cmd_test)
     # No passthrough argument is declared: everything after `run` is collected in
