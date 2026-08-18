@@ -74,6 +74,9 @@ escapes the extension root is additionally fragile.
 **Cost.** The extension cannot be loaded straight from a fresh clone; the generator
 must run first. This is a documented step in the build path.
 
+**Revised by decision 21** for `protocol.js` only, and for one reason: that cost lands on
+exactly the action the task asks a reviewer to take.
+
 ---
 
 ## 4. Windows, macOS, and Linux — not the one platform required
@@ -638,6 +641,72 @@ rejects recipes declaring very old minimums — verified by building zlib from s
 it, and Conan tool-requires its own CMake for recipes that demand a particular one. A
 system CMake is now ignored, so someone debugging a version question should look in
 `.venv` first.
+
+---
+
+## 21. protocol.js is committed, and should not be
+
+**Decision.** `dstORCH/src/generated/protocol.js` is committed. Every other generated file
+stays out of version control, `dstDESK/src/Core/Protocol.hpp` included.
+
+**Context.** The brief asks for an extension that is loadable unpacked. A Chrome extension
+has no build step, so a reviewer who clones `dstORCH` and loads it — the first thing the
+task describes — gets an extension whose service worker dies on an import for a file
+nothing in their sequence was going to produce. `dstDESK` does not have this problem: its
+own build regenerates the header before compiling anything, so the rule costs it nothing.
+The rule was right; it was only ever paid for on one side.
+
+**This is a concession to the task, not a design improvement.** A generated file in version
+control is a second copy of the truth, free to drift from `protocol.json`, and the only
+thing standing against that is `generate.py --check` running in `dstDESK`'s build — which
+a reviewer touching only the extension never runs. The file says so itself, at the top,
+where someone tempted to edit it will read it.
+
+**Rejected — leaving it generated and documenting the step.** What decision 3 already did.
+It works if the README is read in order, and turns the task's own first instruction into a
+failure for anyone who does not.
+
+**Rejected — giving the extension a build step.** A bundler would make the generated file
+an ordinary build artifact and settle this properly. It also adds Node, a package manifest
+and a lockfile to a repository that currently needs no toolchain at all, to produce a file
+that is 40 lines of constants.
+
+**What would undo it.** A build step on the extension side, or publishing the extension as
+a package rather than a directory. Either makes the file an artifact again, and it comes
+back out of git.
+
+---
+
+## 22. Recording to disk was never asked for, and is kept anyway
+
+**Decision.** Both streams are written to WAV files by default, and `--no-record` turns
+that off while keeping the frame accounting.
+
+**Context.** The brief asks for capture, transcription and a live transcript. It does not
+ask for recordings. They exist because they came first: before there was a transcription
+key, writing WAV files was the only way to show that frames were arriving intact and in
+order, and nothing went back to ask whether the scaffolding should stay once transcription
+worked. The naming still shows it — `StreamRecorder`, `--output`, "Recording into …" — an
+application that describes itself as a recorder which also transcribes, which is backwards
+from the task.
+
+Two arguments kept it. It is the evidence layer: `0 gaps (0 padded samples) 0 rejected`
+means something only because the recorder reconstructs a continuous timeline from frame
+indices, and that is how the transcript-ordering bug was found and how the endurance run
+was judged. And it makes the application do something useful with no account at all, which
+serves "runnable from the README" for a reviewer who has no Deepgram key.
+
+**Rejected — removing it.** Honest to the brief, and it would delete the only mechanism
+that makes frame-level correctness falsifiable.
+
+**Rejected — leaving it mandatory.** It is the project's largest privacy exposure: meeting
+audio, unencrypted, kept until someone deletes it. An unrequested feature that cannot be
+switched off is worse than the same feature with a flag.
+
+**Consequences.** `--no-record` keeps the counting and writes nothing, so the session
+summary still reports gaps and rejects with no audio on disk. The default remains on,
+because a reviewer without a key would otherwise see an application that appears to do
+nothing at all.
 
 ---
 

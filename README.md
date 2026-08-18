@@ -187,7 +187,10 @@ environment and started with `env -i`.
 Worth knowing before pointing it at a real meeting.
 
 **Both streams are written to disk unencrypted**, as WAV files under the output
-directory, and nothing removes them afterwards. They are meeting audio, so treat them as
+directory, and nothing removes them afterwards. `--no-record` transcribes without writing
+any audio at all; the session summary still reports frames, gaps and rejects, so nothing
+diagnostic is lost. Recording is not something the task asked for — decision 22 in
+[`DESIGN.md`](DESIGN.md) says why it is here and why it defaults on. They are meeting audio, so treat them as
 you would a recording made any other way.
 
 **Audio is sent to Deepgram for transcription.** That is a third-party service over
