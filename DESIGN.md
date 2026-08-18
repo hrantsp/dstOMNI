@@ -85,7 +85,16 @@ free here: **all audio capture happens in the browser**, so the C++ application 
 touches WASAPI, CoreAudio, or ALSA. It is a WebSocket server, an STT client, and a Qt
 window — three portable dependencies with no platform-conditional audio code.
 
-**Cost.** Verification time on three platforms rather than one. No new engineering.
+**Cost.** Verification time on three platforms rather than one — and it was not free
+after all. Every platform found faults the others could not: Windows needed a windowed
+subsystem and an RC language nobody had enabled, macOS needed the AGL framework prised out
+of Qt's link interface and a recordings directory that does not depend on a working
+directory Finder never sets, and both found gaps in a README that Linux had no way to
+disprove. The engineering was portable; the assumptions were not.
+
+**Verified.** All three run the full pipeline — two live streams from a Google Meet call,
+transcribed separately and interleaved in order. The per-platform record is in
+[`README.md`](README.md).
 
 ---
 
@@ -363,8 +372,9 @@ download rather than a build. Packaging via CPack must place the OpenSSL runtime
 the executable on Windows.
 
 **Revised by decision 17,** which stops requiring OpenSSL on Windows: Qt ships a
-Schannel backend there. macOS remains as described: Qt offers only the OpenSSL backend,
-and the system copy is LibreSSL.
+Schannel backend there. macOS is as described and now confirmed: Qt offers only the
+OpenSSL backend, the system copy is LibreSSL, and the Conan-supplied OpenSSL is what
+carries live `wss://` transcription on that platform.
 
 ---
 

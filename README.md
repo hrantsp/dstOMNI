@@ -159,6 +159,29 @@ rather than recording in silence.
 
 ---
 
+## What has been verified, and where
+
+Every platform below ran the whole pipeline: a Google Meet call, microphone and tab audio
+captured separately by Verbal, both transcribed by Kobayashi, and the two transcripts
+interleaved in order.
+
+| | Linux | Windows 10 | macOS (Apple silicon) |
+|---|---|---|---|
+| `setup`, `build`, unit tests | yes | yes | yes |
+| `--selftest` | yes | yes | yes |
+| Live call, both streams transcribed | yes | yes | yes |
+| Application icon and window identity | yes | yes | yes |
+| Starts by double-click, no console | n/a | yes | yes |
+| TLS backend in use | OpenSSL | Secure Channel | OpenSSL |
+| Packaged artifact runs with no toolchain | yes | — | — |
+| Extension origin refused when it does not match | yes | yes | — |
+
+Nothing above is inferred: each cell was run on that machine. The gaps are honest — the
+packaged artifact has only been exercised on Linux, where it was unpacked into a clean
+environment and started with `env -i`.
+
+---
+
 ## What it records, and what leaves the machine
 
 Worth knowing before pointing it at a real meeting.
