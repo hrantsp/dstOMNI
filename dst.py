@@ -451,6 +451,15 @@ def cmd_build(args):
     if conan is None:
         fail("conan not found — run: python dst.py setup")
 
+    # Checked here and not only in doctor, because without it the failure arrives some
+    # seconds later from inside a dependency's own build — "/bin/sh: cmake: command not
+    # found" while compiling zlib — which names the wrong thing entirely. Conan pulls a
+    # cmake of its own for recipes that ask for one, so its presence in the log is not
+    # evidence that this machine has one.
+    if shutil.which("cmake") is None:
+        fail("cmake not found on PATH. Install it — see the platform notes in "
+             "dstOMNI/README.md — then run: python dst.py doctor")
+
     def step(label, argv):
         """Quiet by default.
 

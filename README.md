@@ -77,12 +77,25 @@ Node.js is optional, needed only for `dstORCH\tst\wire-check.mjs`.
 <summary><strong>macOS</strong> — exactly what to install</summary>
 
 ```bash
-xcode-select --install     # Apple clang and the SDK
-brew install cmake python git
+xcode-select --install     # Apple clang, the SDK, git and python3
 ```
 
-Then the same three commands as everywhere else. Qt is fetched as a universal binary,
-so Apple silicon and Intel are both covered.
+That leaves **CMake**, which macOS does not ship. Either install
+[the official package](https://cmake.org/download/) and add it to `PATH`, or use
+Homebrew — installing that first if it is not present:
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+brew install cmake
+```
+
+The Homebrew installer finishes by printing two lines that put it on `PATH`; on Apple
+silicon nothing works until those are run. Check with `cmake --version` before going on.
+
+Then the same three commands as everywhere else. Qt is fetched as a universal binary, so
+Apple silicon and Intel are both covered. OpenSSL is required here, unlike on Windows —
+Qt offers only its OpenSSL backend on macOS — so expect `setup` to compile it from source
+if ConanCenter has no binary for your Xcode version.
 
 </details>
 
