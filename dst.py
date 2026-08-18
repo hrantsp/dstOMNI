@@ -508,9 +508,9 @@ def _binary(target, name):
     roots = [Path(binary_dir)] if binary_dir else []
     roots += [DESK / "bin" / build_type, DESK / "bin"]
 
-    # dstdesk is a bundle on macOS, so the executable is buried inside it rather than
+    # kobayashi is a bundle on macOS, so the executable is buried inside it rather than
     # sitting in the build directory. Listed alongside the plain names rather than
-    # branching on the platform: dstsim is not a bundle, and a future target might not
+    # branching on the platform: kobayashi-sim is not a bundle, and a future target might not
     # be either, so what is looked for is a file that exists.
     names = [f"{name}{suffix}"]
     if MACOS:
@@ -527,7 +527,7 @@ def _binary(target, name):
 def cmd_run(args):
     target = load_target(args.target)
     require_host_target(target)
-    binary = _binary(target, "dstdesk")
+    binary = _binary(target, "kobayashi")
     if not binary.exists():
         fail(f"{binary} does not exist — run: python dst.py build")
 

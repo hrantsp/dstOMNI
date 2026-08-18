@@ -308,7 +308,7 @@ and splits acquisition across two mechanisms.
 multi-hour first build on the reviewer's machine is not an acceptable cost.
 
 **Verified working.** The recipe was built and a probe compiled against it
-(`dstdesk --selftest`):
+(`kobayashi --selftest`):
 
 ```
 Qt version        : 6.8.3

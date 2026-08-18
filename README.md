@@ -8,13 +8,15 @@ speakers kept apart.
 This repository holds the build entry point, the target descriptors, and the design
 record. The implementation lives in two sibling repositories.
 
-| Repo | Role |
-|---|---|
-| [`dstDESK`](https://github.com/hrantsp/dstDESK) | Desktop application. Receives both streams, records and transcribes them, renders the conversation. Owns the wire protocol. |
-| [`dstORCH`](https://github.com/hrantsp/dstORCH) | Chrome MV3 extension. Captures microphone and tab audio and sends them onward. |
-| `dstOMNI` | This repository. Builds, packages and versions the other two. |
+| Repository | Application | Role |
+|---|---|---|
+| [`dstDESK`](https://github.com/hrantsp/dstDESK) | **Kobayashi** | Desktop application. Receives both streams, records and transcribes them, renders the conversation. Owns the wire protocol. |
+| [`dstORCH`](https://github.com/hrantsp/dstORCH) | **Verbal** | Chrome MV3 extension. Captures microphone and tab audio and sends them onward. |
+| `dstOMNI` | — | This repository. Builds, packages and versions the other two. |
 
-`dstORCH` is the *orchestra* — it plays, and `dstDESK` listens.
+Verbal does the talking; Kobayashi listens and writes it down. The repositories keep
+their `dst*` names — they are where the work lives; the applications are what a user
+meets.
 
 ---
 
@@ -115,7 +117,7 @@ python3 dstOMNI/dst.py run
 A window opens and waits for the extension. `build` prints one progress line rather than
 the compiler's output, which is kept and shown if a step fails; `--verbose` streams it.
 
-On Windows the build copies the Qt runtime beside `bin\Release\dstdesk.exe`, so it can
+On Windows the build copies the Qt runtime beside `bin\Release\kobayashi.exe`, so it can
 also be started by double-clicking it. Windows resolves DLLs from the executable's own
 directory and then `PATH`, with no equivalent of the search path that ELF and Mach-O
 binaries carry, so without that copy the binary reports `Qt6Widgets.dll was not found`.
@@ -280,10 +282,10 @@ The desktop half can be exercised end to end with no extension and no call.
 
 ```bash
 python3 dstOMNI/dst.py run                              # terminal 1
-dstDESK/bin/Release/dstsim --mic a.wav --meeting b.wav --offset 4   # terminal 2
+dstDESK/bin/Release/kobayashi-sim --mic a.wav --meeting b.wav --offset 4   # terminal 2
 ```
 
-`dstsim` speaks the real protocol over a real socket. Without files it sends 440 Hz on
+`kobayashi-sim` speaks the real protocol over a real socket. Without files it sends 440 Hz on
 the microphone stream and 660 Hz on the meeting stream, so the recordings are checkable
 by ear: one clean tone per file means capture and routing are correct. `--gap` drops a
 run of frames so gap padding can be observed rather than assumed.
@@ -299,7 +301,7 @@ without involving a browser.
 Built and verified on **Linux**. The code is portable by construction — all audio
 capture happens in the browser, so the desktop application contains no
 platform-specific audio code at all — but it has not yet been compiled on Windows or
-macOS. `dstdesk --selftest` answers the open question there in one run per machine: Qt
+macOS. `kobayashi --selftest` answers the open question there in one run per machine: Qt
 loads its TLS backend by name at runtime, so a machine without a usable OpenSSL builds
 and starts cleanly and then fails on the first connection to the transcription service.
 
@@ -316,7 +318,7 @@ Command Prompt for VS 2022* rather than a plain terminal; a normal prompt has ne
 the compiler nor Visual Studio's CMake on PATH.
 
 **"cannot bind 127.0.0.1:8765".** Another copy is already running, or something else
-holds the port. `dstdesk --selftest` reports it; change the port in Settings or with
+holds the port. `kobayashi --selftest` reports it; change the port in Settings or with
 `--port`.
 
 **The extension badge shows `!`.** Hover it for the reason. A red `!` after the desktop
