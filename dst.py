@@ -332,9 +332,34 @@ def cmd_doctor(args):
             else "  MISS  qt-official — run: python dst.py setup")
 
     if yours:
-        say(f"\nInstall yourself: {', '.join(dict.fromkeys(yours))}. These are machine "
-            f"prerequisites — setup installs into .venv and nothing system-wide. The "
-            f"platform notes in dstOMNI/README.md say exactly what to install.")
+        say(f"\nInstall yourself: {', '.join(dict.fromkeys(yours))} — machine "
+            f"prerequisites, which setup cannot provide because it installs into .venv "
+            f"and nothing system-wide.")
+
+        # The command, not a pointer to a document. Someone reading this is at a prompt
+        # with something missing, and the distance between the diagnosis and the fix is
+        # the whole value of the command.
+        hints = {
+            "Darwin": {
+                "cmake":  "brew install cmake      (or the package from cmake.org)",
+                "git":    "xcode-select --install  (git and python3 come with it)",
+                "python": "xcode-select --install  (git and python3 come with it)",
+            },
+            "Windows": {
+                "cmake":  "winget install Kitware.CMake",
+                "git":    "winget install Git.Git",
+                "python": "winget install Python.Python.3.12",
+            },
+        }.get(platform.system(), {
+            "cmake":  "your package manager, e.g. sudo apt install cmake",
+            "git":    "your package manager, e.g. sudo apt install git",
+            "python": "your package manager, e.g. sudo apt install python3",
+        })
+
+        for name in dict.fromkeys(yours):
+            if name in hints:
+                say(f"        {name:7s} {hints[name]}")
+        say("\n        The platform notes in dstOMNI/README.md have the full list.")
     if missing:
         say(f"\nRun: python dst.py setup — it provides "
             f"{', '.join(dict.fromkeys(missing))}.")
