@@ -266,19 +266,26 @@ def cmd_doctor(args):
         say(f"  {mark}  {repo:9s} {path}")
 
     say("\nToolchain")
+    # The third field is who supplies it. setup installs into .venv and nothing
+    # system-wide, so it can provide Conan and aqtinstall and cannot provide a compiler,
+    # cmake, git or Python itself. Recording that here is what stops the summary below
+    # telling someone to run setup for something setup will not install.
+    SETUP, YOU, OPTIONAL = "setup", "you", None
     checks = [
-        ("python", [sys.executable, "--version"], True),
-        ("cmake", ["cmake", "--version"], True),
-        ("conan", [tool("conan") or "conan", "--version"], True),
-        ("git", ["git", "--version"], True),
-        ("node", ["node", "--version"], False),
+        ("python", [sys.executable, "--version"], YOU),
+        ("cmake", ["cmake", "--version"], YOU),
+        ("conan", [tool("conan") or "conan", "--version"], SETUP),
+        ("git", ["git", "--version"], YOU),
+        ("node", ["node", "--version"], OPTIONAL),
     ]
-    missing = []
+    missing, yours = [], []
     for name, command, required in checks:
         if command[0] is None or (command[0] != sys.executable and shutil.which(command[0]) is None
                                   and not Path(command[0]).exists()):
             say(f"  {'MISS' if required else 'opt '}  {name}")
-            if required:
+            if required == YOU:
+                yours.append(name)
+            elif required == SETUP:
                 missing.append(name)
             continue
         version = run(command, check=False, capture=True).stdout.strip().splitlines()
@@ -324,8 +331,14 @@ def cmd_doctor(args):
             if "qt-official" in cached.stdout
             else "  MISS  qt-official — run: python dst.py setup")
 
+    if yours:
+        say(f"\nInstall yourself: {', '.join(dict.fromkeys(yours))}. These are machine "
+            f"prerequisites — setup installs into .venv and nothing system-wide. The "
+            f"platform notes in dstOMNI/README.md say exactly what to install.")
     if missing:
-        say(f"\nMissing: {', '.join(dict.fromkeys(missing))}. Run: python dst.py setup")
+        say(f"\nRun: python dst.py setup — it provides "
+            f"{', '.join(dict.fromkeys(missing))}.")
+    if yours or missing:
         return 1
     say("\nEverything required is present.")
     return 0
