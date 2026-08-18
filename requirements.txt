@@ -10,3 +10,9 @@
 conan~=2.31
 aqtinstall~=3.3
 ninja~=1.13
+
+# CMake from PyPI, which ships Kitware's own binaries. It is a machine prerequisite
+# everywhere else, and the one thing macOS does not provide at all — so setup installing
+# it means "setup prepares the toolchain" is true rather than nearly true. The version
+# floor is this project's cmake_minimum_required.
+cmake>=3.24

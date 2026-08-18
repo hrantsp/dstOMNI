@@ -594,6 +594,43 @@ rather than only listed here:
 
 ---
 
+## 20. setup provides the build tools, not only the libraries
+
+**Decision.** `setup` installs CMake and Ninja into `.venv` from PyPI, alongside Conan and
+aqtinstall, and everything this script spawns runs with `.venv` first on `PATH`. The
+machine is expected to supply a C++ compiler, Git and Python, and nothing else.
+
+**Context.** `doctor` reported CMake missing and then said to run `setup`, which did not
+install CMake and by design never would. Worse, `build` did not check for it at all, so on
+a machine without one the failure surfaced from inside a dependency's own build —
+`/bin/sh: cmake: command not found` while compiling zlib, twenty-five seconds in, naming
+the dependency rather than the cause. Conan pulls a CMake of its own for recipes that ask
+for one, so its appearance in the log is not evidence the machine has one, which makes the
+output actively misleading.
+
+CMake on PyPI ships Kitware's own binaries for all three platforms, and Ninja was already
+installed this way — so this is an existing decision applied consistently rather than a
+new dependency. It also fixed a latent fault: nothing put `.venv` on the `PATH` of spawned
+processes, so the Ninja that `setup` installed was only ever found when the caller had
+already activated the environment.
+
+**Rejected — leaving CMake a prerequisite and only fixing the message.** Honest, and
+cheaper. But the brief asks for a project that builds from the README with no missing
+steps, and every prerequisite is a step that can be missing. macOS ships no CMake at all,
+so this was the difference between two commands and a Homebrew detour.
+
+**Rejected — using a system CMake when one is present.** It saves a download and makes the
+toolchain differ per machine, which is the opposite of what a reproducible build wants.
+The version in use is now the same everywhere.
+
+**Consequences.** `setup` downloads roughly 40 MB more. The build uses CMake 4.x, which
+rejects recipes declaring very old minimums — verified by building zlib from source under
+it, and Conan tool-requires its own CMake for recipes that demand a particular one. A
+system CMake is now ignored, so someone debugging a version question should look in
+`.venv` first.
+
+---
+
 ## Pending decisions
 
 None currently open.

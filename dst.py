@@ -73,6 +73,23 @@ def tool(name):
     return found if found else None
 
 
+def workspace_env(extra_path=None):
+    """The environment for anything this script spawns, with .venv's tools in front.
+
+    setup installs cmake and ninja into .venv, and Conan builds dependencies by invoking
+    cmake from PATH — so without this, a machine with no system cmake fails inside a
+    dependency's build with "cmake: command not found", naming the dependency rather than
+    the cause. It also means a Ninja generator finds the ninja that setup installed
+    instead of depending on one happening to be present.
+    """
+    env = dict(os.environ)
+    ahead = [str(VENV / ("Scripts" if WINDOWS else "bin"))]
+    if extra_path:
+        ahead = [extra_path] + ahead
+    env["PATH"] = os.pathsep.join(ahead + [env.get("PATH", "")])
+    return env
+
+
 def run(args, cwd=None, check=True, capture=False, env=None):
     """No shell anywhere: quoting rules differ per platform and a path with a space
     in it is the most ordinary thing in the world on Windows and macOS."""
@@ -81,7 +98,7 @@ def run(args, cwd=None, check=True, capture=False, env=None):
         cwd=str(cwd) if cwd else None,
         text=True,
         capture_output=capture,
-        env=env,
+        env=env if env is not None else workspace_env(),
     )
     if check and result.returncode != 0:
         if capture and result.stderr:
@@ -134,6 +151,7 @@ def run_with_progress(args, label, cwd=None):
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        env=workspace_env(),
     )
 
     stop = threading.Event()
@@ -273,7 +291,7 @@ def cmd_doctor(args):
     SETUP, YOU, OPTIONAL = "setup", "you", None
     checks = [
         ("python", [sys.executable, "--version"], YOU),
-        ("cmake", ["cmake", "--version"], YOU),
+        ("cmake", [tool("cmake") or "cmake", "--version"], SETUP),
         ("conan", [tool("conan") or "conan", "--version"], SETUP),
         ("git", ["git", "--version"], YOU),
         ("node", ["node", "--version"], OPTIONAL),
@@ -494,9 +512,9 @@ def cmd_build(args):
     # found" while compiling zlib — which names the wrong thing entirely. Conan pulls a
     # cmake of its own for recipes that ask for one, so its presence in the log is not
     # evidence that this machine has one.
-    if shutil.which("cmake") is None:
-        fail("cmake not found on PATH. Install it — see the platform notes in "
-             "dstOMNI/README.md — then run: python dst.py doctor")
+    cmake = tool("cmake")
+    if cmake is None:
+        fail("cmake not found — run: python dst.py setup")
 
     def step(label, argv):
         """Quiet by default.
@@ -517,10 +535,10 @@ def cmd_build(args):
     configure, build, _ = _presets(build_type)
 
     say(f"Configuring ({configure})")
-    step("Configure", ["cmake", "--preset", configure])
+    step("Configure", [cmake, "--preset", configure])
 
     say(f"Building ({build})")
-    step("Compile", ["cmake", "--build", "--preset", build])
+    step("Compile", [cmake, "--build", "--preset", build])
 
     say(f"\nBuilt into {DESK / 'bin' / build_type}")
     return 0
@@ -532,7 +550,7 @@ def cmd_test(args):
     _, build, _ = _presets(target.get("DST_BUILD_TYPE", "Release"))
 
     say("Desktop unit tests")
-    run(["ctest", "--preset", build, "--output-on-failure"], cwd=DESK)
+    run([tool("ctest") or "ctest", "--preset", build, "--output-on-failure"], cwd=DESK)
 
     if shutil.which("node") is None:
         say("\nSkipping the browser wire check: node is not installed.")
@@ -589,9 +607,7 @@ def cmd_run(args):
     marker = binary.parent / "qt-runtime-dir.txt"
     if WINDOWS:
         if marker.exists():
-            environment = dict(os.environ)
-            environment["PATH"] = (marker.read_text().strip() + os.pathsep
-                                  + environment.get("PATH", ""))
+            environment = workspace_env(extra_path=marker.read_text().strip())
         else:
             say(f"  note  {marker.name} is missing, so Qt may not be found. It is"
                 " written by the build; re-run: python dst.py build")
@@ -613,7 +629,7 @@ def cmd_package(args):
         fail(f"nothing configured in {build_dir} — run: python dst.py build")
 
     say(f"Packaging with CPack ({generator})")
-    run(["cpack", "-G", generator, "-C", build_type], cwd=build_dir)
+    run([tool("cpack") or "cpack", "-G", generator, "-C", build_type], cwd=build_dir)
     say(f"\nArtifacts in {build_dir}")
     return 0
 

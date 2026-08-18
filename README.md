@@ -38,7 +38,9 @@ git clone https://github.com/hrantsp/dstOMNI.git
 
 ### 2. Prepare the toolchain — once per machine
 
-Needs **Python 3.9+**, **CMake 3.24+**, **Git**, and a C++20 compiler.
+Needs **Python 3.9+**, **Git**, and a C++20 compiler. CMake and Ninja are not in that
+list: `setup` installs them into `.venv` along with Conan, so the versions used are
+the same on every machine and one less thing has to be right before you start.
 
 <details>
 <summary><strong>Windows</strong> — exactly what to install</summary>
@@ -52,7 +54,6 @@ uses is `win64_msvc2022_64`, which needs MSVC in any case.
 | [Build Tools for Visual Studio 2022](https://visualstudio.microsoft.com/downloads/), workload **"Desktop development with C++"** | MSVC v143 and the Windows SDK. The full IDE works too but is not needed. |
 | [Python 3.9+](https://www.python.org/downloads/windows/) — tick **"Add python.exe to PATH"** | Runs `dst.py`, Conan, aqtinstall and the protocol generator |
 | [Git for Windows](https://git-scm.com/download/win) | Cloning |
-| [CMake 3.24+](https://cmake.org/download/) | Visual Studio bundles one, but not on PATH outside its own prompt |
 | Google Chrome | Loading the extension |
 
 Nothing else is needed — in particular, Windows long paths do **not** have to be
@@ -80,17 +81,8 @@ Node.js is optional, needed only for `dstORCH\tst\wire-check.mjs`.
 xcode-select --install     # Apple clang, the SDK, git and python3
 ```
 
-That leaves **CMake**, which macOS does not ship. Either install
-[the official package](https://cmake.org/download/) and add it to `PATH`, or use
-Homebrew — installing that first if it is not present:
-
-```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-brew install cmake
-```
-
-The Homebrew installer finishes by printing two lines that put it on `PATH`; on Apple
-silicon nothing works until those are run. Check with `cmake --version` before going on.
+That is all of it — no Homebrew needed. CMake, which macOS does not ship, is installed by
+`setup` into `.venv` along with Conan and Ninja.
 
 Then the same three commands as everywhere else. Qt is fetched as a universal binary, so
 Apple silicon and Intel are both covered. OpenSSL is required here, unlike on Windows —
@@ -104,7 +96,8 @@ python3 dstOMNI/dst.py doctor    # says what is missing before anything is downl
 python3 dstOMNI/dst.py setup     # creates .venv, installs Conan, fetches Qt
 ```
 
-`setup` downloads the official Qt binaries into the local Conan cache. Only the modules
+`setup` installs Conan, aqtinstall, CMake and Ninja into `.venv`, then downloads the
+official Qt binaries into the local Conan cache. Only the modules
 this application links are fetched — about 200 MB rather than the 1.6 GB of a full
 install, since Quick and QML account for most of Qt's size and this is a Widgets
 application.
