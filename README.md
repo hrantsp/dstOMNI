@@ -18,6 +18,9 @@ Verbal does the talking; Kobayashi listens and writes it down. The repositories 
 their `dst*` names — they are where the work lives; the applications are what a user
 meets.
 
+The names come from *The Usual Suspects* (1995), where Verbal Kint does the talking and
+Kobayashi is who it goes to.
+
 ---
 
 ## Getting it running
@@ -147,6 +150,28 @@ or, for a double-clicked launch, use **Settings…** in the window, which writes
 config file. A launch from a file manager inherits no shell environment, so the
 variable that works in a terminal is simply absent there — the window says so plainly
 rather than recording in silence.
+
+---
+
+## What it records, and what leaves the machine
+
+Worth knowing before pointing it at a real meeting.
+
+**Both streams are written to disk unencrypted**, as WAV files under the output
+directory, and nothing removes them afterwards. They are meeting audio, so treat them as
+you would a recording made any other way.
+
+**Audio is sent to Deepgram for transcription.** That is a third-party service over
+`wss://`, and it only happens once a key is configured — without one the application
+records and does not transcribe, which is the whole of the difference.
+
+**Nothing is exposed off the machine.** The socket binds `127.0.0.1`, and the desktop
+application accepts browser connections only from Verbal's own extension origin. That
+check matters more than it sounds: a WebSocket to loopback needs no CORS preflight, so
+without it any web page open in any browser could connect to a running Kobayashi while
+you were in a meeting. `--origin` overrides the list; `--token` adds a shared secret on
+top. The reasoning, and the gaps deliberately left, are in decision 19 of
+[`DESIGN.md`](DESIGN.md).
 
 ---
 

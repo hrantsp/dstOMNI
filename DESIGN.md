@@ -172,8 +172,9 @@ every audio frame.
 - Qt must be built with a working TLS backend, since the STT client needs `wss://`.
   This constrains the pending Qt acquisition decision and is verified on day one.
 - Any local process can reach a localhost port, so the server checks the
-  `Origin: chrome-extension://<id>` header Chrome sends and requires a shared token
-  from the target configuration.
+  `Origin: chrome-extension://<id>` header Chrome sends. Decision 19 describes what that
+  check does and does not cover. An earlier version of this entry also claimed a shared
+  token was required, which was never true of the defaults.
 - The port is defined in `targets/*.cfg`; both halves read it from there.
 
 ---
@@ -543,6 +544,53 @@ build tree is where a reviewer spends their time.
 **Consequences.** Windows builds carry a copy of the Qt runtime in the build tree, which
 costs disk and a few seconds on each relink. The `PATH` mechanism stays as the fallback
 for a Qt install without `windeployqt`.
+
+---
+
+## 19. The origin check is the security boundary, and the extension id is pinned
+
+**Decision.** The desktop application accepts browser connections only from Verbal's own
+origin, and Verbal pins its id with a `key` in its manifest so that origin can be stated
+in advance. A client sending no `Origin` header at all is accepted.
+
+**Context.** A WebSocket to loopback needs no CORS preflight, so **any page the user
+visits can open a socket to the desktop application** while a meeting is being recorded.
+It could displace the live session and stream its own audio in, to be recorded and billed
+to the user's transcription account. This is the only remotely reachable surface the
+project has, and it was open: the origin list defaulted to empty, which accepted
+everything.
+
+The check works because a browser sets `Origin` itself and page script can neither forge
+nor suppress it. What made it unusable before is that an unpacked extension's id changes
+on every load, so there was no stable origin to name. Pinning the public key in the
+manifest fixes the id, and that id lives in `protocol.json` because it is the one piece
+of identity both halves must agree on.
+
+**Rejected — requiring an `Origin` from every client.** It closes nothing: a native
+process sends whatever headers it likes, and one already running as this user does not
+need a socket to do harm. It would break `kobayashi-sim` and the wire check, which are
+what make the protocol testable without a browser.
+
+**Rejected — a shared token on by default.** It authenticates native clients, which the
+paragraph above argues is not the threat, and it needs provisioning: the same secret
+typed in two places, or generated into a file the extension can somehow read. `--token`
+stays available for anyone who wants it.
+
+**Consequences.** Reloading the extension from another directory no longer changes its
+id. Changing the manifest `key` now means changing `protocol.json` too, and the generator
+carries it to both sides.
+
+**Known gaps, deliberately left.** Each is marked `HP:TODO` at the place it applies,
+rather than only listed here:
+
+| Gap | Where | Why it is left |
+|---|---|---|
+| Recordings written unencrypted | `Core/StreamRecorder.hpp` | Needs retention and key management to mean anything |
+| API key in plain text, owner-only | `App/Settings.hpp` | A real fix is three platform keychains and a fallback |
+| An accepted client displaces a live session | `IO/WsServer.cpp` | Harmless while the only accepted origin is the extension's |
+| No token by default | `IO/WsServer.cpp` | The origin check covers the reachable threat |
+| Transport is `ws://`, not `wss://` | `dstORCH/src/offscreen.js` | Nothing leaves the machine; a loopback certificate costs more than it buys |
+| Audio goes to a third party | Deepgram, by design | Inherent to the brief; stated in the README |
 
 ---
 
