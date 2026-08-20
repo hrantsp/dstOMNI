@@ -1217,7 +1217,12 @@ def cmd_clean(args):
                 if not args.recordings:
                     kept.append((f"{repo}/{path}", "recordings — pass --recordings"))
                     continue
-            plans.append((Path(repo) / path, f"{repo}/{path}", note))
+            # Anchored to ROOT, not to the working directory. git was already asked
+            # with `-C ROOT/repo`, so the listing is right from anywhere — but the
+            # removal was not, and resolving these against the caller's cwd meant that
+            # running the command from inside dstOMNI, which is where ./dst.py lives,
+            # pointed every deletion at a path that does not exist.
+            plans.append((ROOT / repo / path, f"{repo}/{path}", note))
 
     venv = ROOT / ".venv"
     if venv.exists():
@@ -1249,11 +1254,38 @@ def cmd_clean(args):
     if args.dry_run:
         return 0
 
+    # Checked rather than assumed, both before and after.
+    #
+    # The first version of this used rmtree(ignore_errors=True) and unlink(missing_ok=
+    # True), which are the right calls for a path that may legitimately be absent and
+    # exactly the wrong ones here: every target came from `git clean -Xdn` moments
+    # earlier, so any of them being absent means the path is wrong, not that the work is
+    # done. With the paths resolved against the wrong directory, the command printed
+    # "Removing:" and removed nothing, and said so with no error at all.
+    failures = []
+
     for path, shown, _ in plans:
-        if path.is_dir() and not path.is_symlink():
-            shutil.rmtree(path, ignore_errors=True)
-        else:
-            path.unlink(missing_ok=True)
+        if not path.exists() and not path.is_symlink():
+            failures.append(f"{shown} — not where it was expected ({path})")
+            continue
+
+        try:
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+        except OSError as err:
+            failures.append(f"{shown} — {err.strerror or err}")
+            continue
+
+        if path.exists() or path.is_symlink():
+            failures.append(f"{shown} — still present afterwards")
+
+    if failures:
+        say("")
+        for problem in failures:
+            say(f"  FAILED  {problem}")
+        fail(f"{len(failures)} of {len(plans)} could not be removed")
 
     # The one thing this cannot reach, and the one that decides whether a rebuild from
     # here resembles a reviewer's first run. Qt lives in Conan's cache, which is shared
