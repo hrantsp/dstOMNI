@@ -369,6 +369,7 @@ python3 dstOMNI/dst.py <command> [--target NAME]
 | `test` | Runs the unit tests, then the protocol, wire, session and reconnect checks against servers it starts itself. `--sanitize` runs all of it against `bin/Sanitize` and fails on any sanitizer report |
 | `run` | Starts the desktop application |
 | `package` | Produces a distributable archive with CPack |
+| `clean` | Removes build trees and generated files, returning the workspace to what a fresh clone gives. `--recordings` and `--toolchain` extend it; `--dry-run` only lists |
 | `status` | Commit, tag, unpushed and uncommitted counts for all three repositories |
 | `version` | Tags every repository with one version |
 
@@ -376,6 +377,19 @@ python3 dstOMNI/dst.py <command> [--target NAME]
 declares the platform it builds on, and `build`, `run` and `package` refuse a target
 that is not this machine — Qt's deployment tools only run on their own operating
 system, so there is nothing to gain from failing halfway instead.
+
+`clean` exists so the claim this README makes can be tested rather than assumed. The brief
+asks for a project that builds from a clean checkout with no missing steps, and there was
+no way back to a clean checkout without deleting directories by hand and hoping that was
+all of them. It asks git what a fresh clone would lack rather than carrying a list, so it
+cannot fall behind a build that learns to emit something new — and it will not touch
+`dstORCH/src/generated/protocol.js`, which is generated but committed on purpose so the
+extension loads from a bare clone.
+
+Recordings and the toolchain are kept unless asked for: one is meeting audio, the other is
+a 1.6 GB download. The Conan cache is machine-wide and is never touched, so a build after
+`clean` is a clean *workspace* build rather than a clean *machine* build — the command says
+so, and says how to close the gap.
 
 ### Shell completion
 

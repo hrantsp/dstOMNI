@@ -1173,6 +1173,102 @@ def _unpushed(repo):
     return f"{ahead} (no upstream)" if ahead else "unknown"
 
 
+
+def _clean_targets(repo):
+    """What a fresh clone of `repo` would not have.
+
+    Asked of git rather than listed here, and `-X` rather than `-x`: only files the
+    repository already declares ignored, never merely untracked ones. Two reasons that
+    matters. A hand-written list rots the moment the build learns to emit something new —
+    `bin/Sanitize` was exactly that case. And `dstORCH/src/generated/protocol.js` is
+    committed on purpose (decision 21) so the extension loads from a bare clone; git knows
+    it is tracked and will not offer it, where any rule about "generated files" would
+    delete the one generated file that must survive.
+    """
+    listing = git(repo, "clean", "-Xdn", check=False).stdout
+    prefix = "Would remove "
+    return [line[len(prefix):].strip()
+            for line in listing.splitlines() if line.startswith(prefix)]
+
+
+def _is_recording(path):
+    """Recordings are meeting audio, not build output. They are ignored by git and would
+    not survive a clone, but deleting someone's recordings because they asked to clean a
+    build tree is not a trade this should make silently."""
+    return path == "out" or path.startswith("out/") or path.startswith("out\\")
+
+
+def cmd_clean(args):
+    """Returns the workspace to what a fresh clone would give, minus what it must ask
+    about first.
+
+    This exists to make the README's central claim testable. The brief requires a project
+    that builds from a clean checkout with no missing steps, and there was no way to get
+    back to a clean checkout without deleting three directories by hand and hoping that
+    was all of them.
+    """
+    plans, kept = [], []
+
+    for repo in REPOS:
+        for path in _clean_targets(repo):
+            note = None
+            if _is_recording(path):
+                note = "recordings"
+                if not args.recordings:
+                    kept.append((f"{repo}/{path}", "recordings — pass --recordings"))
+                    continue
+            plans.append((Path(repo) / path, f"{repo}/{path}", note))
+
+    venv = ROOT / ".venv"
+    if venv.exists():
+        if args.toolchain:
+            plans.append((venv, ".venv", "toolchain"))
+        else:
+            kept.append((".venv", "toolchain — pass --toolchain, then setup again"))
+
+    root_out = ROOT / "out"
+    if root_out.exists():
+        if args.recordings:
+            plans.append((root_out, "out", "recordings"))
+        else:
+            kept.append(("out", "recordings — pass --recordings"))
+
+    if not plans and not kept:
+        say("Already clean.")
+        return 0
+
+    say("Would remove:" if args.dry_run else "Removing:")
+    for _, shown, note in plans:
+        say(f"  {shown}{'' if note is None else f'   ({note})'}")
+    if not plans:
+        say("  (nothing)")
+
+    for shown, why in kept:
+        say(f"  keeping {shown}   ({why})")
+
+    if args.dry_run:
+        return 0
+
+    for path, shown, _ in plans:
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            path.unlink(missing_ok=True)
+
+    # The one thing this cannot reach, and the one that decides whether a rebuild from
+    # here resembles a reviewer's first run. Qt lives in Conan's cache, which is shared
+    # across every project on the machine and is not the workspace's to delete — so a
+    # build after this is a clean *workspace* build, not a clean *machine* build. Said
+    # out loud because the difference is fifteen minutes and 1.6 GB.
+    say("\nThe Conan cache is untouched: it is machine-wide, not part of this workspace,")
+    say("so `setup` will find Qt already built and finish in about a second. To rehearse")
+    say("what a reviewer actually sees, remove the qt-official package as well:")
+    say("  conan remove 'qt-official/*' --confirm")
+
+    say("\nFrom here: python dst.py setup && python dst.py build && python dst.py test")
+    return 0
+
+
 def cmd_status(args):
     for repo in REPOS:
         head = git(repo, "log", "-1", "--format=%h %s", check=False).stdout.strip()
@@ -1486,6 +1582,15 @@ def build_parser():
     run_parser.set_defaults(fn=cmd_run)
 
     sub.add_parser("package", help="build a distributable archive").set_defaults(fn=cmd_package)
+
+    clean_parser = sub.add_parser("clean", help="remove build trees and generated files")
+    clean_parser.add_argument("--recordings", action="store_true",
+                              help="also delete recorded audio under out/")
+    clean_parser.add_argument("--toolchain", action="store_true",
+                              help="also delete .venv, so setup must run again")
+    clean_parser.add_argument("--dry-run", action="store_true",
+                              help="list what would go, remove nothing")
+    clean_parser.set_defaults(fn=cmd_clean)
     sub.add_parser("status", help="git state across the workspace").set_defaults(fn=cmd_status)
 
     version_parser = sub.add_parser("version", help="tag every repository with one version")
