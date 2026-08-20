@@ -1254,6 +1254,66 @@ fault.
 
 ---
 
+## 30. Padding is bounded in total, not only per gap
+
+**Decision.** Both padding paths — the recording and the stream forwarded to the
+transcription engine — carry a cumulative bound alongside the per-gap one: **one gap's
+allowance, plus one sample of silence for every sample actually received.** Past it,
+padding stops, the timeline re-bases, and the count of refused gaps is reported.
+
+**Context.** Decision 27 bounded a single gap at thirty seconds, after one frame claiming
+a position four billion samples ahead wrote 6.3 GB. That bound is applied per frame and
+remembers nothing, so it does not bound anything: a client claiming a gap of *twenty-nine*
+seconds on every frame passes the check every time and is padded in full every time, 31
+times a second on each stream.
+
+Measured, with sixty frames carrying 1.92 s of real audio:
+
+```
+                 on disk    reported duration    padded samples
+before             53 MB           1711.03 s        27,345,792
+after             968 KB             30.89 s           463,488
+```
+
+Sustained, the old behaviour was roughly 55 MB/s of writes — and on the engine path, the
+same frames become 1711 s of upload to a service billed by the minute.
+
+**This is decision 28 applied to decision 27.** The rule that a fix is not finished until
+the same fault has been looked for one level up, turned on the fix that motivated the rule.
+The per-gap bound answered "how large may one gap be?" and never asked "how many may there
+be?" — which is the same question the 6.3 GB fault asked, one level out.
+
+**The shape of the bound, and why this one.** A fixed total would have to be either small
+enough to break a genuinely lossy long session or large enough to leave the amplification
+worth having. Scaling with received audio has neither problem: real audio always dominates
+in a real session, so the bound is never approached, while a client that sends almost
+nothing gets almost no padding. Output is bounded at about twice the input plus a
+constant, however the positions lie.
+
+The fixed part is one gap's allowance, so an early drop is still covered before much audio
+has arrived — without it, a legitimate gap in the first seconds of a call would be refused.
+
+**Rejected — refusing the frame instead of re-basing.** Then the stream never recovers:
+its expected position stays behind, every later frame is another oversized gap, and it
+stops recording. Re-basing keeps a working stream working and steps the timeline once.
+
+**Rejected — a fixed cumulative budget.** Simpler, and it makes a three-hour call with
+repeated network trouble behave differently from a one-hour call with the same trouble
+rate. The bound should scale with the session, and there is a quantity that already does.
+
+**Cost.** The engine budget is per connection rather than per stream, because a
+replacement connection is a new upload and carrying a spent budget across would leave a
+reconnected stream unable to cover the first drop after it. So a client that could force
+reconnections could refresh the allowance — bounded by the retry budget of decision 25,
+which is five.
+
+**Reachability.** Only a client that lies about `sampleIndex`, and the origin check means
+that client must be a local process — which decision 19 already argues is not the threat
+this project defends against. It is fixed anyway: an amplification factor that depends on
+the attacker being polite is not a bound.
+
+---
+
 ## Pending decisions
 
 None currently open.
