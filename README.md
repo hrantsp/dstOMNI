@@ -239,46 +239,39 @@ the architecture, the trade-offs, and the evidence that each was tested rather t
 assumed. More features would add more that I did not decide, and would make this longer to
 review without making it better.
 
-**Transcript.** It is shown and never saved: no export to text, SRT, VTT or JSON, and no
-persistence between sessions. Only the audio is written. No LLM anywhere, though the task
-permits one — summaries and action items are a different product from a transcript that
-keeps two speakers apart. No renaming a stream from "Meeting" to a person's name, and no
-naming of individual remote participants; `--diarize` labels voices within the meeting
-stream but does not identify them.
-
-**Interface.** A single light palette on all three platforms, which is a stopping point
-and not a position — dark mode belongs here, and the palette is deliberate only because a
-half-applied theme is worse than either whole one. No always-on-top, no custom
-disappearing title bar, no background blur or opacity, no tray icon, no global hotkeys, no
-recordings browser, no playback of an existing recording with re-transcription. No manual
-reconnect button, because the transcription link already reconnects by itself (decision
-25) and a button would only offer to do what is already happening.
-
-**Recording lifecycle.** No sharing, no cloud sync, and no ring buffer keeping the last N
-minutes. `--no-record` exists; everything beyond it is product.
-
-**Platform and packaging.** CPack produces an archive per platform, not an installer: no
-MSI or NSIS on Windows, no signed and notarized `.dmg`, no AppImage, no portable build.
-There is no single artifact for all three and cannot be — Qt's deployment tools run only
-on their own operating system (decision 5) — so this means one installer per platform,
-each built on it.
-
-**Integration.** No syncing capture with the Google Meet microphone button. That one was
-built and removed: it depended on the structure of Meet's DOM, broke when it changed, and
-a feature that silently stops working is worse than one that is absent. No meeting
-metadata — title, participants, start time — gathered from the tab and sent to the
-application. No Zoom or Teams. No transcription inside the extension without a desktop
-application, which would contradict the task.
-
-**Engineering.** No CI: all three platforms were verified by hand, and the record of what
-was run where is above. No translations, though `tr()` is used throughout so the strings
-are ready for them. No local speech-to-text — Whisper running on the machine would remove
-the third-party dependency entirely, and is the most interesting thing on this list. No
-microphone selection; the system default is used. One session at a time — a second
-connection replaces the first. Two streams, though the protocol's stream byte addresses
-256.
-
-**Product.** No accounts, no subscriptions.
+| # | Considered | Why it is not here |
+|---|---|---|
+| 1 | Transcript export — text, SRT, VTT, JSON | The transcript is shown and never written. Only the audio is saved. The most conspicuous absence here, and the first thing that would be built |
+| 2 | Transcript persistence between sessions | Same: nothing survives the window closing |
+| 3 | LLM summaries or action items | The task permits an LLM. A summary is a different product from a transcript that keeps two speakers apart |
+| 4 | Renaming a stream — "Meeting" to "John" | Cosmetic over a model that is fixed at two streams |
+| 5 | Naming individual remote participants | `--diarize` separates voices within the meeting stream; identifying them is a different problem |
+| 6 | Dark mode | One light palette on all three platforms **for now** — a stopping point, not a position |
+| 7 | Always-on-top window | Polish |
+| 8 | Custom disappearing title bar | Polish |
+| 9 | Background blur and opacity | Polish |
+| 10 | Tray icon with actions | Polish |
+| 11 | Global hotkeys | Polish |
+| 12 | Recordings browser | Product surface, not an engineering question |
+| 13 | Playing and re-transcribing an existing recording | Product surface |
+| 14 | Manual reconnect button | The transcription link already reconnects on its own (decision 25). A button would offer to do what is happening anyway |
+| 15 | Sharing a recording | Product |
+| 16 | Cloud sync for recordings | Product, and a privacy question this deliberately does not open |
+| 17 | Ring buffer keeping only the last N minutes | Product |
+| 18 | An installer per platform — MSI or NSIS, a signed `.dmg`, an AppImage | CPack produces an archive per platform today. One installer for all three is impossible: Qt's deployment tools run only on their own operating system (decision 5), so this means one each, built on it |
+| 19 | Portable build | Same packaging work as 18 |
+| 20 | Syncing capture with the Google Meet microphone button | **Built once and removed.** It depended on the structure of Meet's page and broke when that changed. A feature that silently stops working is worse than one that is absent — but this belongs in the product, and is second in the order below |
+| 21 | Meeting metadata — title, participants, start time — from the tab | Unbuilt |
+| 22 | Plugins for Zoom, Teams and other meeting platforms | Unbuilt. The capture side is written against Chrome's tab capture, so another platform means another extension or a native equivalent, not a setting |
+| 23 | Transcription inside the extension, with no desktop application | Contradicts the task, which asks for a C++ desktop application |
+| 24 | Accounts and subscriptions | Product, not engineering |
+| 25 | Continuous integration | All three platforms were verified by hand; the table above says which checks ran where |
+| 26 | Code signing and notarization | Out of scope, and noted where it bites: an unsigned bundle arriving by download is quarantined (`targets/macos.cfg`) |
+| 27 | Translations | `tr()` is used throughout, so the strings are ready; no catalogues exist |
+| 28 | Microphone-only transcription — one input, no meeting, no extension | The desktop application has no audio capture of its own. Every stream reaches it from the browser, which is what keeps it clear of WASAPI, CoreAudio and ALSA and made all three platforms nearly free (decision 4). A standalone dictation mode means adding exactly the platform audio code that decision exists to avoid. The microphone stream is already transcribed by itself if capture is started on any tab; what is missing is doing it without a browser at all |
+| 29 | Microphone selection | The system default device is used |
+| 30 | More than one session at a time | A second connection replaces the first, deliberately (decision 19) |
+| 31 | More than two streams | The protocol's `stream` field is a `u8`, so 256 are addressable; two are defined |
 
 ### What would come first
 
