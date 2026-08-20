@@ -404,6 +404,41 @@ compiled from source.
 
 ---
 
+## Where the time goes
+
+A frame is 512 samples, so one arrives every **32 ms** per stream — 62.5 a second across
+both. That is a generous budget, and it is the trap: anything the receive path does in
+microseconds is invisible, so per-frame cost is the wrong thing to watch.
+
+The two costs that actually mattered here were not per-frame costs. One grew with the
+number of lines already on screen; the other grew with an integer the client supplied.
+Neither shows up in a profile of a short session, which is why both survived until
+something was run long enough or fed something odd enough to expose them.
+
+| Measured | Before | After |
+|---|---|---|
+| Appending a transcript line, at 1200 lines | 21.6 ms, and rising with every line | **0.21 ms, flat** |
+| Laying out an hour of meeting | 14,310 ms | **247 ms** |
+| Clearing a search over 1200 lines | 1,325 ms | **2 ms** |
+| Writing an hour of audio to disk | 614 ms | **30 ms** |
+| One frame with an implausible position | 6.3 GB written, event loop blocked | **2 kB, and reported** |
+| A transcription link dropping once a second | 34 connections in 28 s | **12, then it stops** |
+
+The first three are one change: the transcript stopped being a widget per utterance and
+became a model, a filter and a delegate, so the view renders the rows on screen and
+nothing else. `kobayashi-bench` guards it — as a **shape**, not a millisecond threshold:
+it fails if appending gets slower as the transcript grows, and it was confirmed against
+the implementation it replaced, which fails it by 7×.
+
+Nothing else on the audio path was tuned, because nothing else needed it. The frame that
+leaves the browser is the frame the transcription engine receives — 16 kHz mono PCM16, no
+resampling, no channel mixing, no codec anywhere in between — so the desktop application
+routes bytes and draws a UI rather than processing audio. Decisions 8, 24 and 27 have the
+reasoning and the numbers, including the two allocations still on the path and why removing
+them would be the same mistake as profiling a two-minute session.
+
+---
+
 ## Targets and packaging
 
 A target descriptor holds only what genuinely differs between platforms — build type,

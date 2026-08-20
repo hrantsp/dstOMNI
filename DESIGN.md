@@ -1018,6 +1018,61 @@ proved to depend on the structure of someone else's page.
 
 ---
 
+## 27. The audio path is measured, and the risks on it are not the obvious ones
+
+**Decision.** The per-frame receive path is bounded and measured: no transcoding, one
+reused conversion buffer, one write per frame. Nothing on it is allowed to scale with the
+length of the session or with a number supplied by the client.
+
+**Context — the budget is generous, which is the trap.** A frame is 512 samples, so one
+arrives every **32 ms** per stream, 62.5 per second across both. Anything the receive path
+does in tens of microseconds is invisible. That makes per-frame cost the wrong thing to
+worry about, and it is exactly what a performance discussion usually worries about.
+
+The two costs that actually mattered in this project were not per-frame costs at all:
+
+| | What it scaled with | Measured |
+|---|---|---|
+| Transcript view | **the number of lines already shown** | 2.7 ms → 21.6 ms per append over 1200 lines; 14.3 s of layout for an hour of meeting (decision 24) |
+| Gap padding | **an integer supplied by the client** | one 1036-byte frame wrote 6.3 GB of silence, synchronously, with the event loop blocked |
+
+Neither is a slow function. Both are shapes — one grows with history, one grows with
+input — and a profile of a two-minute session shows neither. That is the lesson worth
+recording: on this path, look for what grows, not for what is slow.
+
+**The per-frame work, and what it costs.**
+
+| Stage | Cost |
+|---|---|
+| `parseFrame` | Bounds and field checks over a span. No copy, no allocation. |
+| `samplesInto` | One `memcpy` into a `scratch_` vector reused across frames, so a 62-per-second arrival rate allocates nothing. Byte-swaps only on a big-endian host. |
+| `StreamRecorder::accept` | Position arithmetic; the file is flushed once a second, not once a frame. |
+| `WavWriter::write` | **One `ostream::write` per frame.** It was one *per sample* — 512 calls to move 1 kB, about 32,000 calls a second across both streams. Measured over 112,500 frames, an hour of one stream: **614 ms → 30 ms**, or 5.46 µs → 0.27 µs per frame. |
+| `SttClient::sendAudio` | One `QByteArray` copy of the payload, then the socket. |
+
+**What still allocates, and why it is left.** Honesty is worth more here than a claim of
+zero:
+
+- The capture worklet allocates a fresh `Int16Array` per frame. It cannot not: the buffer
+  is *transferred* to avoid copying 1 kB across the thread boundary, and a transferred
+  buffer is detached. Removing the allocation means recycling buffers back from the main
+  thread, which couples the audio thread to it for a kilobyte 31 times a second.
+- `sendAudio` copies the payload into a `QByteArray` because that is what the socket takes.
+
+Both are ~1 kB at 31 Hz. Against a 32 ms budget they are noise, and pursuing them would be
+the same mistake as profiling a two-minute session.
+
+**Rejected — leaving the WAV write as it was.** It is 5 µs a frame and would never have
+shown up in a profile. It was still 512 calls to do the work of one, on the receive path,
+for no reason other than that the byte-order helper happened to take a stream. Twenty
+times faster for four lines is worth taking even when the absolute number does not matter.
+
+**Rejected — a benchmark suite.** One benchmark exists, for the transcript view, because
+that is the only place where cost grows without bound and a regression would be invisible.
+See decision 24; it runs in `dst.py test` and asserts shape rather than milliseconds.
+
+---
+
 ## Pending decisions
 
 None currently open.
