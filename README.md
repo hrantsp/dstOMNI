@@ -244,6 +244,7 @@ have to change.
 | **A transcription connection that recovers after a long outage** | While a stream is stalled the other commits past it. If it then returns with text from before that point, the text is appended after lines it should have preceded. | The alternative is a transcript frozen for the rest of the call, which is worse and looks like the application being broken. Decision 13 has the reasoning. |
 | **More than about thirty seconds of lost audio in one gap** | Padding stops and the stream re-bases, so its timeline has a step in it. Reported, not silent. | The bound exists because the gap length arrives from the client and is used as a write length. Without it one frame wrote 6.3 GB. |
 | **Sustained double-talk on loud external speakers** | Echo cancellation is what keeps the remote participants out of the microphone transcript, and it is relaxed during double-talk so the near-end speaker is not clipped. Live calls on all three platforms show the separation holding on laptop speakers; harder conditions are untested. | Correcting it properly means an echo canceller in the desktop application, against a reference that has crossed a socket. Decision 23. |
+| **Speaker labelling does nothing** | `--diarize`, and the matching checkbox, ask the engine to label the voices inside the meeting stream. The engine does it and returns a speaker index on every word; nothing reads it. The option changes nothing you can see. | Finishing it means carrying the index through to the view, which is a feature rather than a fix to the two-stream separation the task asks for. Stated in the interface, the help text and decision 14 rather than left to be discovered. |
 | **`--stt-endpoint` ships in the released binary** | A flag exists that points transcription at any endpoint. | Without it the transcription and merge path can only be exercised against a paid third party, so it had no test at all. Decision 25 argues the trade. |
 
 The security posture — unencrypted recordings, a plaintext API key, no token by default,
@@ -329,7 +330,7 @@ boundary, and that this list of features should stay unbuilt.
 
 The evidence for that is deliberately in the repositories rather than in this paragraph:
 
-- **[`DESIGN.md`](DESIGN.md)** records twenty-nine decisions with the alternatives rejected
+- **[`DESIGN.md`](DESIGN.md)** records thirty decisions with the alternatives rejected
   and what each costs. Two of them supersede earlier ones, and say so; three correct claims
   that turned out to be false, and say which sentence was wrong and what replaced it.
   Decision 28 is a decision *about* that: three separate fixes here turned out to have

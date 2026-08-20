@@ -500,8 +500,24 @@ two-person scene correctly — but on a second scene with two similar voices it 
 both into one speaker.
 
 **Consequence.** The brief's requirement is met by the two streams, which are separated
-by construction rather than by inference. Diarisation refines the meeting side when it
-works and misleads when it does not, so it is not load-bearing.
+by construction rather than by inference. Diarisation would refine the meeting side when it
+works and mislead when it does not, so it is not load-bearing.
+
+**Known issue: the option does nothing.** `diarize=true` is sent, and the engine returns a
+speaker index on every word — which nothing reads. `Utterance` carries no speaker field and
+the transcript shows the stream label, `Microphone` or `Meeting`, so turning the option on
+costs a query parameter and changes nothing visible.
+
+The paragraph above was written from experiments run on raw engine responses before the
+application existed, and describes what diarisation does rather than what this application
+does with it. It stood for weeks because a decision is written when it is made and nothing
+re-checks it against the code afterwards — the same way decision 7 claimed a required token
+no target ever set, and decision 12 predicted a download that turned out to be a build.
+
+Left as a known limit rather than finished or removed. Finishing it means carrying the
+index on `Utterance` and showing it beside the meeting label; removing it would contradict
+the decision above, which deliberately offers the option. The label, the command-line help
+and an `HP:TODO` at the request site all now say it does not work.
 
 ---
 
