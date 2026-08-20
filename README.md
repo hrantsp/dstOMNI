@@ -218,7 +218,7 @@ python3 dstOMNI/dst.py <command> [--target NAME]
 | `doctor` | Reports what this machine is missing, and stops there |
 | `setup` | Creates the virtual environment, installs Conan and aqtinstall, fetches Qt |
 | `build` | Builds the desktop application |
-| `test` | Runs the unit tests, and explains the browser wire check |
+| `test` | Runs the unit tests, then the protocol, wire and reconnect checks against servers it starts itself |
 | `run` | Starts the desktop application |
 | `package` | Produces a distributable archive with CPack |
 | `status` | Commit, tag, unpushed and uncommitted counts for all three repositories |
@@ -349,18 +349,10 @@ run of frames so gap padding can be observed rather than assumed.
 
 `dstORCH/tst/wire-check.mjs` runs the extension's own encoder under Node against a
 running desktop app, which is what proves the JavaScript and C++ agree byte for byte
-without involving a browser.
-
----
-
-## Status
-
-Built and verified on **Linux**. The code is portable by construction — all audio
-capture happens in the browser, so the desktop application contains no
-platform-specific audio code at all — but it has not yet been compiled on Windows or
-macOS. `kobayashi --selftest` answers the open question there in one run per machine: Qt
-loads its TLS backend by name at runtime, so a machine without a usable OpenSSL builds
-and starts cleanly and then fails on the first connection to the transcription service.
+without involving a browser. `dstDESK/tst/abuse.mjs` is its counterpart for the server:
+it sends the malformed, misplaced and out-of-order frames a real client eventually will,
+and checks each is answered the way `PROTOCOL.md` §5.3 says. Both are run by
+`dst.py test`, which starts a server for them — needing Node, and skipped without it.
 
 ---
 

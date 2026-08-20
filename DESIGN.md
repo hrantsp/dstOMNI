@@ -38,6 +38,21 @@ no single entry point, and the reviewer must reconcile two READMEs.
 **Cost.** The reviewer clones three repositories instead of one, and lockstep tagging
 must actually be performed rather than assumed.
 
+**Reaffirmed, knowing the cost.** The brief says "ship a GitHub repo link", singular, and
+the honest reading is that one repository would have satisfied it with less friction for
+whoever reviews this. The layout stays anyway, and the argument is not that it is free:
+
+- The two halves are delivered by different mechanisms — one is loaded unpacked into a
+  browser, the other is compiled, packaged and signed per platform. They have no build
+  system, no toolchain and no release cadence in common.
+- "Which extension works with which desktop build" is a real question the moment there is
+  more than one of either, and lockstep tags answer it. Every tag in this workspace was
+  actually cut and pushed across all three, so it is a practice rather than an intention.
+- A monorepo answers the version question for free and hides the release-engineering one.
+  Both are defensible; this one is chosen deliberately, and `dstOMNI` exists so that the
+  cost lands on three `git clone` lines rather than on the reviewer reconciling two
+  READMEs and guessing at the build order.
+
 ---
 
 ## 2. `dstDESK` owns the wire protocol
@@ -389,9 +404,17 @@ in a live zone that may still change. There is no fixed hold time.
 
 ```
 finalizedUpTo[stream] = max(start + duration) over that stream's final results
-watermark             = min(finalizedUpTo) across open streams
-commit                = every non-empty final with end <= watermark, sorted by start
+watermark             = min(finalizedUpTo) across open, responding streams
+commit                = every non-empty final with start < watermark, sorted by start
 ```
+
+**The test is on `start`, not `end`.** Every stream has finalised everything before the
+watermark, so any utterance still to come must *begin* at or after it — which means
+anything pending that began earlier can never be preceded, whatever its own end. Waiting
+for `end <= watermark` instead holds a long utterance behind a shorter, later one from
+the other stream, and then has to place it before lines already committed: precisely the
+scrambling this exists to prevent. An earlier version of this entry specified `end`; the
+implementation has always used `start`, and the implementation is right.
 
 **Context — measured, not assumed.** Two concurrent Deepgram connections were driven in
 real time from a shared clock, one carrying a monologue and one a dialogue starting four
@@ -424,11 +447,25 @@ requirement names: when two people speak close together, the transcript reverses
 
 **Consequences.**
 
-- Below the watermark, ordering is provably complete: neither stream can still produce
-  anything earlier, so committed text never has to be rewritten.
+- Below the watermark, ordering is complete **while both streams are responding**:
+  neither can still produce anything earlier, so committed text never has to be
+  rewritten.
 - Latency adapts by itself. A degraded network slows the watermark instead of corrupting
   the order.
 - A closed stream must be removed from the minimum, or the watermark freezes forever.
+- **A stalled stream is the one hole in the guarantee, and it is deliberate.** A stream
+  whose transcription connection has died is dropped from the minimum after 20 s of
+  total silence, or the transcript stops advancing for the rest of the call while the
+  other stream keeps producing text — indistinguishable, on screen, from the
+  application being broken. The cost is that if that stream ever recovers and delivers
+  a final from before the point the other stream has now committed past, the text is
+  appended after lines it should have preceded. A transcript briefly out of order is
+  recoverable; one frozen for the rest of the meeting is not. The threshold sits far
+  above any working connection precisely so this is reached only when something is
+  genuinely broken.
+- A stream closed and reopened on the same connection resumes at the position it had
+  reached, rather than restarting at zero. Restarting would pull the watermark back to
+  the beginning of the session and stop anything committing until it had caught up.
 - Interim results must never be promoted directly into committed text. Finals were
   observed to be *shorter* than the interim preceding them, and to revise words at the
   start: `"Finding people is my specialty. So, naturally, I work for the"` finalised as
@@ -533,6 +570,17 @@ one target can be invisible on another — the argument for testing on hardware 
 than reasoning about it. `--selftest` reports the active backend by name, and on Windows
 10.0.19045 with no OpenSSL present it reads `Secure Channel`, which is how this was
 confirmed rather than assumed.
+
+**Corrected later — TLS is a requirement of transcription, not of the application.**
+There is exactly one `wss://` in this project: the connection to the transcription
+service. The link the extension uses is plain `ws://` on loopback and needs no TLS at
+all, and transcription is optional — the application records without a key by design
+(decision 22). Despite that, a missing TLS backend was a fatal self-test check, so a
+machine without a usable OpenSSL was refused a start rather than allowed to do the half
+of the job that did not depend on it. That is now judged against what the run will
+actually do: fatal when transcription is on, a warning when it is not. The output
+directory is treated the same way against `--no-record`. A precondition should stop
+only the feature that needs it.
 
 ---
 
@@ -707,6 +755,221 @@ switched off is worse than the same feature with a flag.
 summary still reports gaps and rejects with no audio on disk. The default remains on,
 because a reviewer without a key would otherwise see an application that appears to do
 nothing at all.
+
+**A recorder that fails must say so.** Calling this the evidence layer only means
+something if a failure is visible: a full disk, a removed drive or an unwritable folder
+used to leave the frame counters climbing and the session summary reporting a clean run
+over a file that had stopped growing. Both are now surfaced — a write that fails marks
+the stream and the summary says `WRITE FAILED`, and a stream whose file cannot be opened
+at all says so in the window rather than in a console line a double-clicked application
+does not have. The failing direction was verified against `/dev/full` and a read-only
+directory; the unit suite guards the other direction, that a healthy recording never
+raises it.
+
+---
+
+## 23. Echo cancellation is the acoustic half of "kept separate"
+
+**Decision.** The microphone is captured with `echoCancellation: true`, and the browser
+is asked afterwards whether it actually applied it. `noiseSuppression` and
+`autoGainControl` stay on, named as inherited defaults rather than measured choices.
+
+**Context.** Decision 10 replays the captured meeting audio so the user can still hear
+the call. On a laptop that audio leaves a speaker a few centimetres from the microphone
+and comes straight back into it. The brief's requirement is two streams "kept separate
+so the conversation can be followed in a natural order" — and stream identity only
+keeps them separate *logically*. Acoustically, an uncancelled echo path puts the remote
+participants' words into the microphone stream, where they are transcribed and shown as
+something the local user said. The two transcripts then agree with each other, a second
+apart, and the conversation reads as one person repeating the other.
+
+So the separation this project is graded on rests on two mechanisms, not one: the stream
+id, which is exact and was designed; and echo cancellation, which is statistical and was
+inherited from a snippet. Only the first of those was written down until now.
+
+**What is actually relied on.** Chrome's AEC3 runs inside `getUserMedia`, before the
+track reaches the capture `AudioContext`, and takes its reference from the browser's own
+render mix — which the `<audio>` element in the offscreen document is part of. So the
+mechanism is present by construction. What it does not promise is completeness: a linear
+canceller plus residual suppression leaves some echo, most of it during **double-talk**,
+when suppression is relaxed so the near-end speaker is not clipped. Double-talk is also
+exactly when a meeting transcript is hardest to order, so the failure lands where it
+costs most.
+
+**Rejected — dropping the playback so there is no echo path.** Removes the problem
+entirely and makes the product unusable: the user stops hearing their own meeting.
+
+**Rejected — capturing the microphone raw and cancelling in the desktop application.**
+Full control, and it means implementing an adaptive filter with delay estimation against
+a reference stream that has crossed a socket. That is a project, and it is the browser's
+job here.
+
+**Rejected — deduplicating in `TranscriptMerger`.** Both streams share a clock, so
+microphone text that matches meeting text a moment earlier could be detected and
+suppressed. It is a real option and the natural next step if leakage turns out to
+matter. It is not a substitute: it corrects the transcript after the fact and does
+nothing for the recordings, and a rule that deletes text because the other stream said
+something similar will eventually delete someone agreeing out loud.
+
+**Cost, stated plainly.** Verified only on a laptop with built-in speakers, in sessions
+of one to two minutes, on one machine — which is the exposed configuration rather than
+the safe one, so it is evidence, but it is thin evidence. Long sessions, external
+speakers, and sustained double-talk are untested. The check added here reports when the
+browser declines the constraint; it cannot report how much echo survives it, and no
+measurement of that has been made.
+
+**Consequences.** A microphone that comes back without echo cancellation now says so on
+the extension badge instead of producing a quietly wrong transcript. `noiseSuppression`
+and `autoGainControl` are named constants with the reasoning attached, so turning them
+off is a one-line experiment rather than an archaeology exercise.
+
+---
+
+## 24. The transcript is a model and a view, not a widget per line
+
+**Decision.** Committed utterances live in a `QAbstractListModel` over a
+`std::vector<Core::Utterance>`, are filtered by a `QSortFilterProxyModel`, and are drawn
+by a delegate into a `QListView`. The previous version built one `QWidget`, one
+`QHBoxLayout` and three `QLabel`s per utterance and appended them to a `QVBoxLayout`.
+
+**Context — measured, not assumed.** The widget version was written for a demo and
+verified in sessions of one to two minutes, where nothing it does badly is visible. A
+harness that appends utterances and forces the layout and paint that a real window would
+do reports this, at 1200 lines — roughly an hour of meeting:
+
+```
+                        widget per line      model and view
+append, per line        2.7 ms rising           0.21 ms flat
+                          to 21.6 ms
+1200 appends, total        14310 ms                247 ms
+first search keystroke       199 ms                  3 ms
+clearing the search         1325 ms                  2 ms
+stream filter                 55 ms                  1 ms
+```
+
+The number that matters is not the ratio, it is the shape. The widget version's
+per-append cost **grows with the number of lines already shown**, so an hour-long meeting
+gets slower the longer it runs — 21.6 ms per line at 1200, still climbing past 53 ms at
+3400, where the run was abandoned. Lines arrive faster than that during an argument.
+
+Two things caused it. Appending to a `QVBoxLayout` invalidates the layout, and solving it
+means asking every child for its size — and word-wrapped `QLabel`s answer through
+`heightForWidth`, which is the expensive kind of question. Separately, `append()` called
+`applyFilters()`, which walked every row on every line.
+
+Clearing a search was the worst single moment: a second and a third of a frozen window at
+1200 lines, because a thousand hidden widgets became visible at once and the layout had to
+solve all of them.
+
+**Rejected — fixing only the sweep.** `append()` need not re-render rows it did not
+change, and that is a twenty-line change. It removes the smaller of the two costs and
+leaves the layout solve, which is most of it. Worth doing if nothing else were possible;
+it is not a fix, it is a discount.
+
+**Rejected — a single `QTextEdit` or `QPlainTextEdit`.** A transcript is a document, and
+`QPlainTextEdit` is built for exactly this shape — ever-growing, append-only, with text
+selection and copying for free. Genuinely the smaller change. It was rejected because
+filtering by stream and by search would mean rebuilding the document on every keystroke,
+where a proxy model filters without touching the presentation at all; and because the
+per-row layout — timestamp column, coloured speaker, dimmed low-confidence text — would
+have to be rebuilt as generated HTML over arbitrary speech, which is an escaping bug
+waiting to be written.
+
+**Rejected — keeping only the last N lines.** Instant, and it throws away the meeting.
+
+**Consequences.**
+
+- Cost stops depending on history. At 20,000 lines appends are 0.47 ms and clearing a
+  search is 5 ms — some growth remains, because `QListView` still walks its rows to size
+  the scrollbar, but it walks a cached integer per row rather than solving a layout.
+- Measurement and painting share one `QTextLayout` code path, so the height a row is
+  given is by construction the height its text is drawn at. Two code paths drift.
+- Row heights are cached per row and discarded when the viewport **width** changes; a
+  height-only resize keeps them, since it changes nothing about how text wraps.
+- Search highlighting is a `QTextLayout::FormatRange`, not markup. The old version built
+  HTML out of speech and escaped it by hand — correct as written, and one missed call
+  from swallowing a line containing a `<`.
+- The stored type is `Core::Utterance`, the same Qt-free struct the merger emits, so the
+  window holds the transcript rather than a display-shaped copy of it.
+- `TranscriptView`'s public interface is unchanged, so `MainWindow` did not move.
+
+**Cost.** Two new files and a delegate, against a widget tree anyone can read at a
+glance. A delegate is the harder thing to modify — there is no widget to inspect, and
+getting a column wrong means reading paint code rather than looking at a layout. That is
+the trade a view makes, and it is worth it here only because the row count is unbounded.
+
+---
+
+## 25. A dropped transcription connection is retried, not mourned
+
+**Decision.** `SttClient` reconnects on an unexpected drop, with exponential backoff, a
+budget of five attempts, and no retry at all for an answer that will not change. It owns
+the mapping between the engine's clock and the shared capture clock, so a replacement
+connection is re-based rather than believed.
+
+**Context.** A dropped connection was indistinguishable from a finished one: both reached
+`onDisconnected`, which emitted `finished`, which closed the stream in the merger. The
+consequences were not proportionate to the cause. A momentary network blip — the sort a
+laptop produces by changing wifi bands — ended transcription for that stream **for the
+rest of the meeting**. Audio kept arriving and kept being recorded, so the recording was
+perfect and half the transcript simply stopped, with nothing said anywhere.
+
+**What made it correct rather than merely present.** Three things, each of which was wrong
+in a first attempt and found by running it against a mock that misbehaves on purpose:
+
+- *A new connection starts the engine's clock at zero.* The origin must come from the
+  **front of the buffered audio**, established before that buffer is sent. Taking it from
+  the next frame to arrive instead dates every result on the reconnected stream by however
+  long the outage lasted — measured as a 1.65 s hole where the real one was 0.17 s.
+- *Interrupted is not closed.* The stream keeps its place in the merger so its text still
+  lands in order, but it is marked stalled so it stops holding the watermark down; the
+  other stream must not freeze for the length of the outage. This is the mechanism
+  decision 13 already needed for a dead engine, used for a live one that will be back.
+- *The retry budget resets on health, not on success.* Resetting it whenever a result
+  arrived looked right and was not: a connection that comes up, delivers a second of
+  transcript and dies has "worked" by that measure, so a link flapping once a second reset
+  the budget every time and reconnected forever — **34 sessions in 28 seconds**, each one
+  separately billable. Judged on how long the connection lasted instead, the same mock
+  produces six connections and then a clear refusal.
+
+**Rejected — reconnecting in `WsServer` by rebuilding the client.** Where the first
+version accidentally was, since `isFinished()` became true on any drop. It reconnects the
+socket and loses everything: the merger's stream is already closed, so `addFinal` discards
+every result the new connection produces. The clock mapping and the socket belong to the
+same object or neither works.
+
+**Rejected — retrying a 401 or a 403.** They are answers, not accidents: the key is wrong
+or the model is refused. Retrying spends fifteen seconds to say the same thing.
+
+**Rejected — buffering the whole outage.** Three seconds are kept, so an ordinary blip
+loses nothing; past that the audio is counted and dropped, and the count is reported on
+resumption. Holding minutes of audio to replay into an engine that times from its first
+byte trades a small gap for a large distortion.
+
+**Cost.** A local mock had to exist before any of this could be believed, which is why
+`kobayashi-mockstt` and `--stt-endpoint` now do. That flag is testing scaffolding in the
+shipped binary, and it earns its place: without it the transcription and merge path — the
+hardest part of this project to get right — could only ever be exercised against a paid
+third party, so it had no test at all.
+
+**Verified, and the verification is verified.** `dst.py test` runs two sessions against the
+mock. A single drop must resume, report itself, leave the other stream untouched, and land
+back on the same one-second grid the uninterrupted stream sits on. A link that drops
+repeatedly must back off 500 ms, 1 s, 2 s, 4 s, 8 s and then refuse, without opening
+further connections.
+
+Both assertions were confirmed against the faults they exist for, by putting each fault
+back and watching the check fail:
+
+| Fault reintroduced | What the check said |
+|---|---|
+| Origin taken after the buffered audio | `reconnected stream is 0.49s off the shared clock` |
+| Retry budget reset by any result | `never gave up` · `reconnect storm: 40 connections were opened` |
+
+The second of those took two attempts to catch. The first flapping scenario dropped the
+connection at exactly one second, which is before the mock reports anything — so no result
+arrived, the faulty reset never ran, and the check passed over the bug it was written for.
+A regression test that has not been shown to fail is decoration.
 
 ---
 

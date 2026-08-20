@@ -26,6 +26,7 @@ import os
 import platform
 import re
 import shutil
+import socket
 import subprocess
 import tempfile
 import threading
@@ -544,6 +545,248 @@ def cmd_build(args):
     return 0
 
 
+def _wait_for_port(port, process, what, timeout=30):
+    """Waits for something to accept connections, rather than sleeping a guessed
+    interval: a cold start behind a virus scanner takes far longer than a warm one, and
+    a fixed sleep is either slow every time or flaky on the machine that needed it."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            fail(f"{what} exited before it was ready ({process.returncode})")
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.settimeout(0.25)
+            if probe.connect_ex(("127.0.0.1", port)) == 0:
+                return
+        time.sleep(0.1)
+    fail(f"{what} did not start listening on {port} within {timeout}s")
+
+
+def _free_port():
+    """A port nobody else is on, so the checks below cannot collide with a running app
+    or with each other."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as ss:
+        ss.bind(("127.0.0.1", 0))
+        return ss.getsockname()[1]
+
+
+def _protocol_checks(target):
+    """Runs the two socket-level checks against a server this function starts itself.
+
+    They were previously a printed instruction — "start the app in another terminal,
+    then run this" — which meant they were run when someone remembered to, which was
+    almost never. abuse.mjs is the only thing that checks the MUSTs in PROTOCOL.md §5.3
+    are implemented at all, and it sat unreferenced by any document or command for its
+    whole life. A check that is not in a command is not a check.
+    """
+    if shutil.which("node") is None:
+        say("\nSkipping the protocol checks: node is not installed.")
+        return 0
+
+    binary = _binary(target, "kobayashi")
+    if not binary.exists():
+        say(f"\nSkipping the protocol checks: {binary.name} is not built.")
+        return 0
+
+    port = _free_port()
+    output = Path(tempfile.mkdtemp(prefix="dst-protocol-"))
+
+    environment = workspace_env()
+    # Headless needs no display, and offscreen keeps it that way on a machine that has
+    # one but is running this over ssh.
+    environment["QT_QPA_PLATFORM"] = "offscreen"
+
+    say(f"\nProtocol checks (server on 127.0.0.1:{port})")
+    server = subprocess.Popen(
+        [str(binary), "--headless", "--no-record", "--no-transcribe",
+         "--port", str(port), "--output", str(output)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=environment)
+
+    failures = 0
+    try:
+        # Wait for the port rather than sleeping a guessed interval: a cold start behind
+        # a virus scanner takes far longer than a warm one, and a fixed sleep is either
+        # slow every time or flaky on the machine that needed it.
+        _wait_for_port(port, server, "the desktop application")
+
+        for label, script in (("server conformance", DESK / "tst" / "abuse.mjs"),
+                              ("browser wire format", ORCH / "tst" / "wire-check.mjs")):
+            say(f"  {label}")
+            result = run(["node", str(script), "--port", str(port)], check=False)
+            if result.returncode != 0:
+                failures += 1
+    finally:
+        _terminate_tree(server)
+        shutil.rmtree(output, ignore_errors=True)
+
+    return failures
+
+
+
+TRANSCRIPT_LINE = re.compile(r"^\s+(\d+):(\d+\.\d+)\s+(Microphone|Meeting)\s+(.*)$")
+
+
+def _run_session(target, mock_args, seconds, label):
+    """Runs one recorded session against the mock transcription service and returns its
+    output, the mock's output, and the parsed transcript."""
+    kobayashi = _binary(target, "kobayashi")
+    sim       = _binary(target, "kobayashi-sim")
+    mock      = _binary(target, "kobayashi-mockstt")
+
+    for tool_path in (kobayashi, sim, mock):
+        if not tool_path.exists():
+            say(f"\nSkipping the reconnect check: {tool_path.name} is not built.")
+            return None
+
+    stt_port = _free_port()
+    ws_port  = _free_port()
+    output   = Path(tempfile.mkdtemp(prefix="dst-reconnect-"))
+
+    environment = workspace_env()
+    environment["QT_QPA_PLATFORM"] = "offscreen"
+    # Any non-empty value: the mock does not check it, and transcription follows the key
+    # rather than a flag, so without one the application would record and nothing else.
+    environment["DEEPGRAM_API_KEY"] = "mock-key"
+
+    say(f"  {label}")
+    engine = subprocess.Popen(
+        [str(mock), "--port", str(stt_port)] + mock_args,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=environment)
+
+    app = None
+    try:
+        _wait_for_port(stt_port, engine, "the mock transcription service")
+
+        app = subprocess.Popen(
+            [str(kobayashi), "--headless", "--no-record", "--port", str(ws_port),
+             "--output", str(output), "--stt-endpoint", f"ws://127.0.0.1:{stt_port}"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=environment)
+        _wait_for_port(ws_port, app, "the desktop application")
+
+        run([str(sim), "--port", str(ws_port), "--seconds", str(seconds)],
+            check=False, capture=True)
+
+        # The engine reports a second of audio only once it has all of it, and a retry
+        # sequence outlives the audio that provoked it, so the tail needs room.
+        time.sleep(6)
+    finally:
+        if app is not None:
+            _terminate_tree(app)
+        _terminate_tree(engine)
+        shutil.rmtree(output, ignore_errors=True)
+
+    app_output    = app.stdout.read() if app is not None else ""
+    engine_output = engine.stdout.read()
+
+    transcript = []
+    for line in app_output.splitlines():
+        hit = TRANSCRIPT_LINE.match(line)
+        if hit:
+            minutes, seconds_part, stream, text = hit.groups()
+            transcript.append((int(minutes) * 60 + float(seconds_part), stream, text))
+
+    return app_output, engine_output, transcript
+
+
+def _reconnect_check(target):
+    """Drives the transcription client against a service that drops connections.
+
+    SttClient's reconnection only runs when a connection dies unexpectedly, and the live
+    service will not do that to order — so this is the only place that code is exercised
+    at all. Three separate faults in it were found this way and none of them by reading
+    it: an origin taken from after the buffered audio rather than its front, a drop
+    treated as a close so the stream never came back, and a retry budget reset by any
+    result so a flapping link reconnected forever.
+    """
+    problems = []
+
+    # ── a single blip: it must come back, and land on the same clock ────────────
+    result = _run_session(target, ["--drop-after", "3"], 12, "recovering from one drop")
+    if result is None:
+        return 0
+    app_output, engine_output, transcript = result
+
+    mic     = [entry for entry in transcript if entry[1] == "Microphone"]
+    meeting = [entry for entry in transcript if entry[1] == "Meeting"]
+
+    # The mock numbers connections across both streams, so "which connection" has to be
+    # read out of the text rather than assumed.
+    def connection_of(text):
+        hit = re.search(r"connection (\d+)", text)
+        return int(hit.group(1)) if hit else None
+
+    mic_connections = [connection_of(entry[2]) for entry in mic]
+    mic_connections = [cc for cc in mic_connections if cc is not None]
+
+    if engine_output.count("opened") < 3:
+        problems.append("the client never opened a replacement connection after the drop")
+    if not any("resumed" in line for line in app_output.splitlines()):
+        problems.append("reconnection was not reported to the user")
+    if "gave up" in app_output:
+        problems.append("the client gave up on a single recoverable drop")
+
+    first = mic_connections[0] if mic_connections else None
+    after = [entry for entry in mic if connection_of(entry[2]) not in (None, first)]
+
+    if len(set(mic_connections)) < 2:
+        problems.append("the microphone transcript never resumed on a new connection")
+    elif not after:
+        problems.append("no transcript arrived on the reconnected microphone stream")
+    if len(meeting) < 5:
+        problems.append(f"the uninterrupted stream produced only {len(meeting)} lines — "
+                        "an outage on one stream must not stall the other")
+
+    # Ordering is the property the whole application rests on, so it is checked over the
+    # merged output rather than per stream.
+    starts = [entry[0] for entry in transcript]
+    if starts != sorted(starts):
+        problems.append("committed transcript went backwards in time")
+
+    # And the alignment. Both streams carry the same audio through the same machinery, so
+    # their results sit on the same one-second grid; a reconnected stream whose origin is
+    # taken from the wrong place lands off it by however long the outage lasted. This is
+    # the check that catches that, and nothing else here would.
+    if after and meeting:
+        grid = meeting[0][0] % 1.0
+        for position, _, text in after:
+            offset = abs((position % 1.0) - grid)
+            offset = min(offset, 1.0 - offset)
+            if offset > 0.25:
+                problems.append(
+                    f"reconnected stream is {offset:.2f}s off the shared clock "
+                    f"({text!r} at {position:.2f}s, grid at {grid:.2f}s)")
+                break
+
+    # ── a link that will not stay up: it must stop, and say so ──────────────────
+    # 1.5 s, not 1 s: the mock reports a result at each whole second and drops after the
+    # threshold, so a connection that dies at exactly 1 s never delivers anything. It has
+    # to deliver something and *then* die, or the case this guards — a budget reset by any
+    # result, so a flapping link reconnects forever — is never reached and the check
+    # passes over the bug it exists for.
+    result = _run_session(target, ["--drop-after", "1.5", "--drop-all"], 30,
+                          "giving up on a link that keeps dropping")
+    if result is None:
+        return 0
+    app_output, engine_output, _ = result
+
+    if "gave up after" not in app_output:
+        problems.append("the client never gave up on a link that dropped every second")
+
+    opened = engine_output.count("opened")
+    # One initial connection plus five retries, per stream, and a little slack for the
+    # session teardown. The failure this bounds was measured at 34 in 28 seconds.
+    if opened > 16:
+        problems.append(f"reconnect storm: {opened} connections were opened")
+
+    for problem in problems:
+        say(f"    FAIL  {problem}")
+
+    if problems:
+        return 1
+
+    say("    ok    recovers from a drop, stays on the shared clock, and stops when it should")
+    return 0
+
+
 def cmd_test(args):
     target = load_target(args.target)
 
@@ -552,13 +795,13 @@ def cmd_test(args):
     say("Desktop unit tests")
     run([tool("ctest") or "ctest", "--preset", build, "--output-on-failure"], cwd=DESK)
 
-    if shutil.which("node") is None:
-        say("\nSkipping the browser wire check: node is not installed.")
-        return 0
+    failures = _protocol_checks(target)
 
-    say("\nBrowser wire check (needs the desktop app running)")
-    say("  Start it in another terminal:  python dst.py run")
-    say(f"  Then:  node {ORCH / 'tst' / 'wire-check.mjs'}")
+    say("\nTranscription reconnect (against the mock service)")
+    failures += _reconnect_check(target)
+
+    if failures:
+        fail(f"{failures} check(s) failed")
     return 0
 
 
