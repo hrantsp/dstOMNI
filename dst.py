@@ -42,6 +42,8 @@ DESK = ROOT / "dstDESK"
 ORCH = ROOT / "dstORCH"
 VENV = ROOT / ".venv"
 
+SANITIZE_BUILD = "Sanitize"
+
 WINDOWS = platform.system() == "Windows"
 MACOS   = platform.system() == "Darwin"
 
@@ -542,7 +544,42 @@ def cmd_build(args):
     step("Compile", [cmake, "--build", "--preset", build])
 
     say(f"\nBuilt into {DESK / 'bin' / build_type}")
+
+    if getattr(args, "sanitize", False):
+        _build_sanitized(cmake, build_type, step)
     return 0
+
+
+def _sanitize_dir():
+    return DESK / "bin" / SANITIZE_BUILD
+
+
+def _build_sanitized(cmake, build_type, step):
+    """A second build tree, instrumented, beside the ordinary one.
+
+    A separate directory rather than an option on the release tree, for two reasons.
+    A sanitized binary is two to three times slower and links a runtime that must not
+    reach a user, so it must not be possible to package one by forgetting to
+    reconfigure. And it reuses the dependencies Conan already resolved for the release
+    build, so this costs one compile of this project's own sources rather than a second
+    Qt — which is what makes it cheap enough to actually run.
+    """
+    _, _, binary_dir = _presets(build_type)
+    toolchain = Path(binary_dir or (DESK / "bin" / build_type)) / "generators" / "conan_toolchain.cmake"
+    if not toolchain.exists():
+        fail(f"no Conan toolchain at {toolchain} — run: python dst.py build")
+
+    target_dir = _sanitize_dir()
+    say(f"\nConfiguring the sanitizer build ({target_dir.name})")
+    step("Configure", [cmake, "-S", DESK, "-B", target_dir,
+                       f"-DCMAKE_TOOLCHAIN_FILE={toolchain}",
+                       f"-DCMAKE_BUILD_TYPE={build_type}",
+                       "-DKOBAYASHI_SANITIZE=ON"])
+
+    say("Building the sanitizer build")
+    step("Compile", [cmake, "--build", target_dir])
+    say(f"\nBuilt into {target_dir}\n"
+        "Run the suite against it with: python dst.py test --sanitize")
 
 
 def _wait_for_port(port, process, what, timeout=30):
@@ -561,12 +598,27 @@ def _wait_for_port(port, process, what, timeout=30):
     fail(f"{what} did not start listening on {port} within {timeout}s")
 
 
+_HANDED_OUT_PORTS = set()
+
+
 def _free_port():
     """A port nobody else is on, so the checks below cannot collide with a running app
-    or with each other."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as ss:
-        ss.bind(("127.0.0.1", 0))
-        return ss.getsockname()[1]
+    or with each other.
+
+    The socket is closed before the number is handed out — it has to be, or the process
+    that is meant to bind it could not — so the kernel is free to offer the same one to
+    the next call. It usually rotates, which is why this held together, but "usually" in
+    a check that starts two servers is a flake waiting for a slow machine. Numbers
+    already given away are refused here rather than being discovered as "the desktop
+    application exited before it was ready"."""
+    for _ in range(64):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as ss:
+            ss.bind(("127.0.0.1", 0))
+            port = ss.getsockname()[1]
+        if port not in _HANDED_OUT_PORTS:
+            _HANDED_OUT_PORTS.add(port)
+            return port
+    fail("could not find a free loopback port")
 
 
 def _protocol_checks(target):
@@ -596,10 +648,11 @@ def _protocol_checks(target):
     environment["QT_QPA_PLATFORM"] = "offscreen"
 
     say(f"\nProtocol checks (server on 127.0.0.1:{port})")
+    diagnostics = _diagnostics(target, "protocol-server")
     server = subprocess.Popen(
         [str(binary), "--headless", "--no-record", "--no-transcribe",
          "--port", str(port), "--output", str(output)],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=environment)
+        stdout=subprocess.DEVNULL, stderr=diagnostics, env=environment)
 
     failures = 0
     try:
@@ -616,16 +669,72 @@ def _protocol_checks(target):
                 failures += 1
     finally:
         _terminate_tree(server)
+        _close_diagnostics(diagnostics)
         shutil.rmtree(output, ignore_errors=True)
 
     return failures
 
 
 
+def _session_checks(target):
+    """Runs tst/sessions.mjs against a server that records and transcribes.
+
+    The protocol checks above start the server with --no-record --no-transcribe, which
+    is exactly the configuration in which the two faults this covers cannot happen: one
+    needs files on disk to overwrite, the other needs a transcription connection
+    outstanding so that teardown waits rather than completing inside the call. So this
+    is a second server, deliberately configured the way a reviewer runs one.
+    """
+    if shutil.which("node") is None:
+        say("\nSkipping the session checks: node is not installed.")
+        return 0
+
+    kobayashi = _binary(target, "kobayashi")
+    mock      = _binary(target, "kobayashi-mockstt")
+    for tool_path in (kobayashi, mock):
+        if not tool_path.exists():
+            say(f"\nSkipping the session checks: {tool_path.name} is not built.")
+            return 0
+
+    stt_port = _free_port()
+    ws_port  = _free_port()
+    output   = Path(tempfile.mkdtemp(prefix="dst-sessions-"))
+
+    environment = workspace_env()
+    environment["QT_QPA_PLATFORM"] = "offscreen"
+    environment["DEEPGRAM_API_KEY"] = "mock-key"
+
+    say(f"\nSession lifetime (server on 127.0.0.1:{ws_port}, recording on)")
+    engine_diagnostics = _diagnostics(target, "sessions-engine")
+    app_diagnostics     = _diagnostics(target, "sessions-server")
+    engine = subprocess.Popen([str(mock), "--port", str(stt_port)],
+                              stdout=subprocess.DEVNULL, stderr=engine_diagnostics,
+                              env=environment)
+    app = None
+    try:
+        _wait_for_port(stt_port, engine, "the mock transcription service")
+        app = subprocess.Popen(
+            [str(kobayashi), "--headless", "--port", str(ws_port),
+             "--output", str(output), "--stt-endpoint", f"ws://127.0.0.1:{stt_port}"],
+            stdout=subprocess.DEVNULL, stderr=app_diagnostics, env=environment)
+        _wait_for_port(ws_port, app, "the desktop application")
+
+        result = run(["node", str(DESK / "tst" / "sessions.mjs"),
+                      "--port", str(ws_port), "--output", str(output)], check=False)
+        return 1 if result.returncode != 0 else 0
+    finally:
+        if app is not None:
+            _terminate_tree(app)
+        _terminate_tree(engine)
+        _close_diagnostics(app_diagnostics)
+        _close_diagnostics(engine_diagnostics)
+        shutil.rmtree(output, ignore_errors=True)
+
+
 TRANSCRIPT_LINE = re.compile(r"^\s+(\d+):(\d+\.\d+)\s+(Microphone|Meeting)\s+(.*)$")
 
 
-def _run_session(target, mock_args, seconds, label):
+def _run_session(target, mock_args, seconds, label, sim_args=()):
     """Runs one recorded session against the mock transcription service and returns its
     output, the mock's output, and the parsed transcript."""
     kobayashi = _binary(target, "kobayashi")
@@ -662,7 +771,7 @@ def _run_session(target, mock_args, seconds, label):
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=environment)
         _wait_for_port(ws_port, app, "the desktop application")
 
-        run([str(sim), "--port", str(ws_port), "--seconds", str(seconds)],
+        run([str(sim), "--port", str(ws_port), "--seconds", str(seconds), *sim_args],
             check=False, capture=True)
 
         # The engine reports a second of audio only once it has all of it, and a retry
@@ -676,6 +785,15 @@ def _run_session(target, mock_args, seconds, label):
 
     app_output    = app.stdout.read() if app is not None else ""
     engine_output = engine.stdout.read()
+
+    # This one merges stderr into stdout and reads it here, so there is nothing to
+    # redirect — but a sanitizer report is still in that text, and _collect_sanitizer_
+    # reports only looks at files. Keep a copy where it will be found.
+    sanitizer_dir = target.get("DST_SANITIZER_DIR")
+    if sanitizer_dir:
+        stem = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
+        (Path(sanitizer_dir) / f"session-{stem}-app.stderr").write_text(app_output)
+        (Path(sanitizer_dir) / f"session-{stem}-engine.stderr").write_text(engine_output)
 
     transcript = []
     for line in app_output.splitlines():
@@ -787,18 +905,174 @@ def _reconnect_check(target):
     return 0
 
 
+def _silent_stream_check(target):
+    """One stream open and silent must not hold the other's transcript back.
+
+    The extension opens both streams as soon as the handshake completes, whether or not
+    the tab has any audio to give. A stream that is open is part of the merge watermark;
+    a stream that never sends a frame can never advance it — so the microphone was
+    transcribed perfectly and not one line of it reached the screen until capture
+    stopped, at which point the whole call arrived at once. Measured at 25 s of nothing
+    followed by 24 lines in 110 ms.
+
+    The check is on *when*, not on *whether*: the end-of-session flush produces the same
+    lines either way, so a test that only counts them passes over the fault.
+    """
+    result = _run_session(target, [], 20, "a stream that opens and never speaks",
+                          sim_args=["--quiet-meeting"])
+    if result is None:
+        return 0
+    app_output, _, transcript = result
+
+    lines = app_output.splitlines()
+    stopped = next((ii for ii, line in enumerate(lines)
+                    if "Stream Microphone closed" in line), len(lines))
+    during = [ii for ii, line in enumerate(lines[:stopped]) if TRANSCRIPT_LINE.match(line)]
+
+    if not transcript:
+        say("    FAIL  nothing was transcribed at all")
+        return 1
+    if not during:
+        say(f"    FAIL  all {len(transcript)} lines arrived after capture stopped — a "
+            "silent open stream froze the transcript for the whole session")
+        return 1
+
+    say(f"    ok    {len(during)} of {len(transcript)} lines were committed during the "
+        "session, not held to the end")
+    return 0
+
+
+def _diagnostics(target, label):
+    """Where a child process's stderr goes.
+
+    /dev/null normally — a background server's stderr is noise. When sanitizing it is
+    the opposite: a sanitizer report is the entire point of the run, and most of what
+    runs below is started detached with nowhere else to put one. Returns a file object
+    the caller must close.
+    """
+    directory = target.get("DST_SANITIZER_DIR")
+    if not directory:
+        return subprocess.DEVNULL
+    return open(Path(directory) / f"{label}.stderr", "w")
+
+
+def _close_diagnostics(handle):
+    if handle is not subprocess.DEVNULL:
+        handle.close()
+
+
+# What a sanitizer says when it has something to say. Matched as text because the two
+# runtimes do not agree on where to put it — see _arm_sanitizer_reports.
+SANITIZER_MARKERS = ("AddressSanitizer", "LeakSanitizer", "ThreadSanitizer",
+                     "runtime error:")
+
+
+def _arm_sanitizer_reports():
+    """Sends every sanitizer report to a file, so a finding cannot be lost.
+
+    By default both runtimes write to stderr, and most of what runs below is started
+    detached with its stderr discarded — a background server, the mock engine, the
+    simulator. A run could therefore report "all checks passed" over a use-after-free
+    nobody saw, which is the failure mode this option exists to remove.
+
+    Two mechanisms, because the runtimes do not behave the same way and the difference
+    is not documented anywhere useful. **ASan honours log_path; GCC's libubsan ignores
+    it and writes to stderr regardless.** Measured, after a deliberately injected
+    out-of-bounds read produced a UBSan report that this function's first version
+    missed entirely — and UBSan is what fires first for exactly that fault. So the
+    environment is set for ASan's benefit, and every child's stderr is captured for
+    UBSan's.
+
+    Not on Windows: ASAN_OPTIONS separates its settings with colons and a Windows path
+    carries one after the drive letter, so log_path cannot be expressed there. The
+    captured stderr still works, which is why it is the mechanism that covers both.
+    """
+    directory = Path(tempfile.mkdtemp(prefix="dst-sanitizer-"))
+    if not WINDOWS:
+        os.environ["ASAN_OPTIONS"] = f"detect_leaks=1:log_path={directory / 'asan'}"
+    os.environ["UBSAN_OPTIONS"] = "print_stacktrace=1"
+    return directory
+
+
+def _collect_sanitizer_reports(directory):
+    """Every file here is a sanitizer report from something this run started."""
+    if directory is None:
+        return 0
+
+    guilty = []
+    for report in sorted(directory.glob("*")):
+        text = report.read_text(errors="replace")
+        # An ASan log file exists only when there is something in it. A captured stderr
+        # exists either way, so it counts only if a runtime actually said something.
+        if report.suffix == ".stderr" and not any(m in text for m in SANITIZER_MARKERS):
+            continue
+        guilty.append((report, text))
+
+    if not guilty:
+        say("    ok    no sanitizer reports from any process this run started")
+        shutil.rmtree(directory, ignore_errors=True)
+        return 0
+
+    # One fault seen by four processes is one fault. Grouped by the line the runtime
+    # actually printed, so the summary counts problems rather than witnesses.
+    faults = {}
+    for report, text in guilty:
+        lines = text.splitlines()
+        headline = next((line for line in lines
+                         if any(m in line for m in SANITIZER_MARKERS)), report.name)
+        # Addresses differ between processes; the fault does not. Grouping on the
+        # address would report one bug five times.
+        key = re.sub(r"0x[0-9a-f]+", "0x…", headline)
+        faults.setdefault(key, []).append((report.name, lines))
+
+    say(f"    FAIL  {len(faults)} sanitizer finding(s) across {len(guilty)} process(es):")
+    for headline, seen in faults.items():
+        names = ", ".join(name for name, _ in seen)
+        say(f"      {headline}")
+        # Only this project's own frames. The rest is Qt's template machinery and the
+        # event loop, which is the same twenty lines under every finding.
+        for line in seen[0][1]:
+            if line.lstrip().startswith("#") and str(DESK / "src") in line:
+                say(f"        {line.strip()}")
+        say(f"        seen by: {names}")
+        say("")
+    say(f"    full reports kept in {directory}")
+    return len(faults)
+
+
 def cmd_test(args):
     target = load_target(args.target)
+    sanitize = getattr(args, "sanitize", False)
 
     _, build, _ = _presets(target.get("DST_BUILD_TYPE", "Release"))
 
-    say("Desktop unit tests")
-    run([tool("ctest") or "ctest", "--preset", build, "--output-on-failure"], cwd=DESK)
+    reports = None
+    if sanitize:
+        directory = _sanitize_dir()
+        if not directory.exists():
+            fail(f"no sanitizer build at {directory} — run: python dst.py build --sanitize")
+        # Every check below resolves its binaries through _binary, which reads this and
+        # then looks nowhere else.
+        reports = _arm_sanitizer_reports()
+        target = dict(target, DST_BINARY_DIR=str(directory),
+                              DST_SANITIZER_DIR=str(reports))
+        say("Desktop unit tests (sanitized)")
+        run([tool("ctest") or "ctest", "--test-dir", directory, "--output-on-failure"],
+            cwd=DESK)
+    else:
+        say("Desktop unit tests")
+        run([tool("ctest") or "ctest", "--preset", build, "--output-on-failure"], cwd=DESK)
 
     failures = _protocol_checks(target)
+    failures += _session_checks(target)
 
     say("\nTranscription reconnect (against the mock service)")
     failures += _reconnect_check(target)
+    failures += _silent_stream_check(target)
+
+    if sanitize:
+        say("\nSanitizers")
+        failures += _collect_sanitizer_reports(reports)
 
     if failures:
         fail(f"{failures} check(s) failed")
@@ -813,8 +1087,16 @@ def _binary(target, name):
     _, _, binary_dir = _presets(build_type)
     suffix = ".exe" if WINDOWS else ""
 
-    roots = [Path(binary_dir)] if binary_dir else []
-    roots += [DESK / "bin" / build_type, DESK / "bin"]
+    # A sanitizer build lives in a tree of its own (see cmd_build). When one is asked
+    # for, it is the *only* place looked in: falling back to bin/Release would run the
+    # ordinary binaries and report a clean sanitizer run over a build that was never
+    # instrumented, which is worse than not having the option at all.
+    override = target.get("DST_BINARY_DIR")
+    if override:
+        roots = [Path(override)]
+    else:
+        roots = [Path(binary_dir)] if binary_dir else []
+        roots += [DESK / "bin" / build_type, DESK / "bin"]
 
     # kobayashi is a bundle on macOS, so the executable is buried inside it rather than
     # sitting in the build directory. Listed alongside the plain names rather than
@@ -1185,10 +1467,17 @@ def build_parser():
                                    "and fetch Qt again")
     setup_parser.set_defaults(fn=cmd_setup)
     build_parser = sub.add_parser("build", help="build the desktop application")
+    build_parser.add_argument("--sanitize", action="store_true",
+                              help="also build an instrumented tree in bin/Sanitize "
+                                   "(AddressSanitizer + UndefinedBehaviorSanitizer)")
     build_parser.add_argument("-v", "--verbose", action="store_true",
                               help="stream compiler output instead of a progress line")
     build_parser.set_defaults(fn=cmd_build)
-    sub.add_parser("test", help="run the tests").set_defaults(fn=cmd_test)
+    test_parser = sub.add_parser("test", help="run the tests")
+    test_parser.add_argument("--sanitize", action="store_true",
+                             help="run the whole suite against bin/Sanitize and fail on "
+                                  "any sanitizer report")
+    test_parser.set_defaults(fn=cmd_test)
     # No passthrough argument is declared: everything after `run` is collected in
     # order by parse_known_args below. Declaring a positional would split the tokens
     # between two lists and lose their order, so a flag could arrive without its value.
