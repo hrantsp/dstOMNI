@@ -463,6 +463,21 @@ requirement names: when two people speak close together, the transcript reverses
   recoverable; one frozen for the rest of the meeting is not. The threshold sits far
   above any working connection precisely so this is reached only when something is
   genuinely broken.
+- **A stream that opens and never speaks is a third state, and it was missed.** The two
+  cases above are *closed* and *stalled*. A stream that is open, has never sent a single
+  frame and therefore has no transcription connection at all is neither: it holds the
+  minimum at zero, and the stall watchdog could not see it, because that watchdog looked
+  for a connection that had gone quiet and there was no connection to look at. The
+  extension opens both streams the moment the handshake completes, whether or not the tab
+  has any audio to give — so this froze the whole transcript for the length of a call
+  while the microphone was being transcribed perfectly, and delivered every line at once
+  in the end-of-session flush. Measured at 25 s of nothing followed by 24 lines in 110 ms.
+  A stream that has never carried audio now leaves the minimum after **5 s** rather than
+  20: a working capture sends its first frame within one 32 ms render quantum, so this is
+  a different question from "how long may an engine that is being fed audio stay silent",
+  and it deserves its own, much shorter, answer. `dst.py test` drives it through
+  `kobayashi-sim --quiet-meeting`, and asserts on *when* the lines arrive — the flush
+  produces the same lines either way, so a check that only counts them passes over it.
 - A stream closed and reopened on the same connection resumes at the position it had
   reached, rather than restarting at zero. Restarting would pull the watermark back to
   the beginning of the session and stop anything committing until it had caught up.
@@ -628,9 +643,41 @@ manifest fixes the id, and that id lives in `protocol.json` because it is the on
 of identity both halves must agree on.
 
 **Rejected — requiring an `Origin` from every client.** It closes nothing: a native
-process sends whatever headers it likes, and one already running as this user does not
-need a socket to do harm. It would break `kobayashi-sim` and the wire check, which are
-what make the protocol testable without a browser.
+process sends whatever headers it likes, so the header can be supplied by anything that
+wants to. It would also break `kobayashi-sim` and the wire check, which are what make
+the protocol testable without a browser.
+
+**A correction to how that used to be argued.** The sentence above previously ended "and
+one already running as this user does not need a socket to do harm." That is true of
+**confidentiality** and false of everything else, and the difference matters enough to
+state rather than to leave implied.
+
+A local process already has the recordings and the config file; the socket gives it
+nothing there. What the socket gives it is **integrity and cost**, neither of which it
+has any other route to:
+
+- It can displace the live session and stream its own audio in, so the file the user
+  later believes is a faithful record of their meeting is not one. Nothing in the UI
+  distinguishes a replaced session from a reconnected one.
+- It can spend the user's transcription account. Audio forwarded to the engine is billed
+  per minute, and a client that lies about `sampleIndex` is amplified: 1.92 s of audio
+  measured as 1,711 s at the engine (§27).
+- It can fill the disk at roughly the same ratio: 500 kB of frames measured as 436 MB
+  written in eight seconds.
+
+So the honest statement of the boundary is narrower than the heading of this decision
+suggests. **`Origin` is the boundary against the browser, and there is no boundary
+against a local process at all.** The decision does not change — a token would not fix it,
+because a process that can read the config can read the token out of it — but the reason
+it does not change is "this is out of scope", not "there is nothing there".
+
+Ranking that against the brief: the reachable attacker is a web page, and that one is
+closed. A local process implies the machine is already lost for confidentiality, and the
+integrity and billing consequences above are the part that would still need answering in
+a product. That answer is an OS-level identity for the peer — `SO_PEERCRED` on Linux,
+`LOCAL_PEERPID` on macOS, `GetNamedPipeClientProcessId` on Windows — checked against the
+browser the user is actually running. Three implementations and a policy about which
+browsers count, which is why it is not here.
 
 **Rejected — a shared token on by default.** It authenticates native clients, which the
 paragraph above argues is not the threat, and it needs provisioning: the same secret
@@ -650,6 +697,8 @@ rather than only listed here:
 | API key in plain text, owner-only | `App/Settings.hpp` | A real fix is three platform keychains and a fallback |
 | An accepted client displaces a live session | `IO/WsServer.cpp` | Harmless while the only accepted origin is the extension's |
 | No token by default | `IO/WsServer.cpp` | The origin check covers the reachable threat |
+| No identity check on a local, origin-less client | `IO/WsServer.cpp` | Needs the peer's process identity from three operating systems, and a policy about which processes count |
+| A client can amplify what is written and billed | `Core/StreamRecorder.hpp`, `IO/SttClient.cpp` | The per-gap cap bounds one frame, not one second. See the known limits in the README |
 | Transport is `ws://`, not `wss://` | `dstORCH/src/offscreen.js` | Nothing leaves the machine; a loopback certificate costs more than it buys |
 | Audio goes to a third party | Deepgram, by design | Inherent to the brief; stated in the README |
 
@@ -1022,7 +1071,12 @@ proved to depend on the structure of someone else's page.
 
 **Decision.** The per-frame receive path is bounded and measured: no transcoding, one
 reused conversion buffer, one write per frame. Nothing on it is allowed to scale with the
-length of the session or with a number supplied by the client.
+length of the session, and no single frame may scale with a number supplied by the client.
+
+> **This decision used to claim more than the code delivers, and the second clause above
+> is the corrected version.** It said *nothing* on the path may scale with a client-supplied
+> number. What is actually true is that no *single frame* may. See "the bound that binds
+> one frame and not one second" below.
 
 **Context — the budget is generous, which is the trap.** A frame is 512 samples, so one
 arrives every **32 ms** per stream, 62.5 per second across both. Anything the receive path
@@ -1070,6 +1124,133 @@ times faster for four lines is worth taking even when the absolute number does n
 **Rejected — a benchmark suite.** One benchmark exists, for the transcript view, because
 that is the only place where cost grows without bound and a regression would be invisible.
 See decision 24; it runs in `dst.py test` and asserts shape rather than milliseconds.
+
+**The bound that binds one frame and not one second.** Gap padding is capped at thirty
+seconds per gap, on both the recording and the engine stream. That cap is applied per
+call and remembers nothing, so it bounds *a frame* at about 937 kB and bounds *a client*
+at nothing at all — and a client may send 31 frames a second on each of two streams.
+Measured, one stream, sixty frames, 60.7 kB on the wire and 1.92 s of real audio:
+
+| | on disk | audio the engine received |
+|---|---|---|
+| ordinary client | 64 kB | 1 s |
+| every frame 29 s ahead of the last | **53 MB** | **1,711 s — 28.5 minutes** |
+
+Sustained at the protocol's own frame rate that is roughly 55 MB/s of writes and 930 s of
+billable audio per second of wall clock. It is the 6.3 GB fault again, at a different
+rate: fixed for the shape it was found in — one enormous integer — and untouched in the
+shape where the same integer arrives repeatedly.
+
+**It is a known limit rather than a defended design, and it is not fixed.** The fix is
+small and known: keep a cumulative padding budget per stream alongside the per-gap one —
+`StreamRecorder` already accumulates `stats_.paddedSamples`, so the condition is one
+extra term — and past it do exactly what an over-cap gap already does, which is stop
+padding, continue from the new position, and report a resync. Five minutes of budget is
+about eighteen maximum-size genuine drops, well beyond anything a real call produces.
+What is left undecided is the number, because "how much manufactured silence may one
+session be worth" is a product question rather than an engineering one, and choosing it
+badly is worse than listing it. Listed in the README's known limits.
+
+**Rejected — bounding it against the wall clock instead.** `sampleIndex` is a position on
+a real-time capture clock, so a stream open for T seconds cannot honestly have advanced by
+more than T seconds of samples. That is the tight bound and it needs no chosen constant.
+It also puts a clock inside `StreamRecorder`, which is today a pure function of its inputs
+and is unit-tested as one, with no event loop and no display. Trading that for a tighter
+bound on a case that only a faulty client reaches is the wrong way round.
+
+---
+
+## 28. A fix is not finished until the same fault has been looked for one level up
+
+**Decision.** When a fault is found and fixed, the next step is not the next fault: it is
+to ask what *class* the fault belongs to, and to go and look for the same class in the
+places the reproduction did not happen to reach. That search is part of the fix, and its
+result — including "looked, found nothing" — belongs with it.
+
+**Context, which is the whole of the argument.** This is not a general principle taken
+from a book. It is the pattern that three separate fixes in this repository turned out to
+share, all found later and none by reading:
+
+| Fixed | What the fix covered | What it did not |
+|---|---|---|
+| Use-after-free on teardown | `SttClient::finish()` answering **synchronously**, inside the loop that called it | The session surviving `closeSession()` and being replaced **asynchronously**. The old socket stayed connected to the server, so a displaced client's audio was written into the *replacement* session's recording and its disconnect tore that session down |
+| Stream reopen destroying the first recording | The **file**: a second `stream-open` gets `mic-2.wav` | The **directory**: two sessions inside one wall-clock second share `yyyyMMdd-HHmmss`, and the second one's `mic.wav` truncates the first — while the summary reports the frames it wrote as a clean session |
+| Unbounded gap padding, 6.3 GB from one frame | **One frame**: capped at thirty seconds | **One second**: the cap remembers nothing, so 31 frames a second each get a fresh 937 kB. Decision 27 |
+
+Each fix was correct. Each was tested. Each stopped exactly at the edge of the case that
+had been observed, and in every one of the three the same fault was sitting one level up —
+one asynchronously instead of synchronously, one in the directory instead of the file, one
+per second instead of per frame.
+
+**Why it happens, and why writing it down is the countermeasure.** A reproduction is a
+single point, and a test written from a reproduction asserts about that point. Nothing in
+that loop ever asks "what is the general shape of this, and where else does that shape
+occur?" — so the answer is only ever reached by someone finding the second instance the
+hard way. The countermeasure is cheap and it is a habit rather than a tool: after the test
+goes green, name the class in one sentence, then grep for it.
+
+**Consequences.** The three rows above are now fixed in both halves, each with a check
+that was shown to fail first — `tst/sessions.mjs` for the first two, and the third listed
+as a known limit rather than fixed, for the reason decision 27 gives. The habit is also
+what produced `dst.py test --sanitize`: "found by a crash rather than by a tool" is itself
+a class, and the answer to it is not another test but a build option (decision 29).
+
+**Rejected — treating this as process advice rather than a decision.** It changes what
+"done" means for every change in the repository, which is the same kind of statement as
+"Core stays framework-free". It belongs where those live.
+
+---
+
+## 29. The build can turn the sanitizers on, and the suite fails on what they say
+
+**Decision.** `KOBAYASHI_SANITIZE=ON` builds the whole project with AddressSanitizer and
+UndefinedBehaviorSanitizer into a tree of its own; `dst.py build --sanitize` produces it
+and `dst.py test --sanitize` runs the entire suite against it and fails on any report.
+
+**Context.** Exactly one memory fault was ever found in this project, and it was found by
+a crash rather than by a tool. Turning the sanitizers on for an afternoon found two more
+in a shipped binary — an out-of-bounds read and an unbounded allocation, both in the WAV
+reader `kobayashi-sim` uses, both named in under a second — and confirmed that the frame
+parser, the recorder and the whole receive path are clean over 1.5 M generated inputs. A
+project that builds its own toolchain (decision 11) and cannot ask this question has not
+finished owning it. That is an architectural gap and it is recorded as one.
+
+**A separate build tree, not an option on the release one.** A sanitized binary is several
+times slower and links a runtime that must not reach a user, so it must not be possible to
+package one by forgetting to reconfigure. It reuses the dependencies Conan already resolved
+for the release build, so it costs one compile of this project's own sources rather than a
+second Qt — which is what makes it cheap enough to actually run.
+
+**The reporting is the hard part, and it was wrong first.** Most of what `dst.py test`
+starts is detached with its stderr discarded — a background server, the mock engine, the
+simulator — so a report has nowhere to go and the run says "all checks passed" over a
+use-after-free nobody saw. The first version set `log_path` so a report becomes a file.
+That works for AddressSanitizer and **not** for GCC's UndefinedBehaviorSanitizer, which
+ignores the option and writes to stderr regardless — measured, after a deliberately
+injected out-of-bounds read produced a UBSan report the collector missed entirely, and
+UBSan is what fires first for exactly that fault. Both mechanisms are therefore used:
+`log_path` for ASan, captured stderr per child for UBSan, and findings are grouped by the
+line the runtime printed rather than by the process that saw it.
+
+**Shown to fail.** The gate was verified by putting a one-line heap over-read into
+`WsServer::onBinaryMessage`, rebuilding only the sanitized tree, and confirming
+`dst.py test --sanitize` reported it — one finding, named at
+`src/IO/WsServer.cpp`, seen by five processes — and exited non-zero. Per decision 28 that
+is the point at which the check is worth having.
+
+**Rejected — a `Sanitize` build type.** Conan resolves dependencies per build type, so a
+new one means resolving and possibly building Qt again for a configuration nothing ships.
+The sanitizers are a property of *this* project's compilation, not of its dependency graph.
+
+**Rejected — running it in `dst.py test` by default.** It needs the second build tree to
+exist and it runs several times slower. A reviewer following the README should not pay for
+it without asking; a flag they can find is the trade.
+
+**Consequences.** MSVC gets AddressSanitizer only — it has no UndefinedBehaviorSanitizer —
+and says so at configure time rather than silently giving half of what was asked for.
+UBSan's `vptr` check is off: it needs RTTI for every polymorphic type it sees, including
+those inside a Qt that was not built with it, and reports the missing information as a
+fault.
 
 ---
 

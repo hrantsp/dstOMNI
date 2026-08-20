@@ -168,6 +168,7 @@ interleaved in order.
 | | Linux | Windows 10 | macOS (Apple silicon) |
 |---|---|---|---|
 | `setup`, `build`, unit tests | yes | yes | yes |
+| Whole suite under AddressSanitizer + UBSan | yes | — | — |
 | `--selftest` | yes | yes | yes |
 | Live call, both streams transcribed | yes | yes | yes |
 | Microphone free of the meeting's audio, on speakers | yes | yes | yes |
@@ -176,10 +177,32 @@ interleaved in order.
 | TLS backend in use | OpenSSL | Secure Channel | OpenSSL |
 | Packaged artifact runs with no toolchain | yes | — | — |
 | Extension origin refused when it does not match | yes | yes | — |
+| `--no-record`: nothing written, accounting kept | yes | — | — |
+| A disk that stops accepting audio, reported not silent | yes | — | — |
 
 Nothing above is inferred: each cell was run on that machine. The gaps are honest — the
 packaged artifact has only been exercised on Linux, where it was unpacked into a clean
-environment and started with `env -i`.
+environment and started with `env -i`, and the last three rows were added after the fact
+and have only been run there.
+
+The last two are worth a word, because both are failure paths rather than features and
+neither had ever been exercised. `--no-record` writes no files and still reports frames,
+gaps and rejects, so the accounting that shows the pipeline working survives turning the
+recording off. A disk that stops accepting audio is reached without root by capping the
+file size and ignoring the signal that goes with it:
+
+```bash
+bash -c 'ulimit -f 100; trap "" XFSZ; exec kobayashi --headless --no-transcribe \
+    --port 8899 --output /tmp/full'
+```
+
+The application says so once per stream rather than 31 times a second, keeps counting
+frames, and flags the recording in the summary:
+
+```
+Recording stopped for Microphone — the disk would not accept it. Transcription is unaffected.
+  mic  187 frames  5.98 s  0 gaps (0 padded samples)  0 rejected  WRITE FAILED — the recording is incomplete
+```
 
 ---
 
@@ -220,6 +243,7 @@ have to change.
 | **A recording longer than ~37 hours** | RIFF sizes are `u32`, so the WAV header wraps past 4 GB and the file's declared length stops matching its contents. Reached before the limit above. | A larger container — RF64 or WAV64 — for a duration no meeting reaches. |
 | **A transcription connection that recovers after a long outage** | While a stream is stalled the other commits past it. If it then returns with text from before that point, the text is appended after lines it should have preceded. | The alternative is a transcript frozen for the rest of the call, which is worse and looks like the application being broken. Decision 13 has the reasoning. |
 | **More than about thirty seconds of lost audio in one gap** | Padding stops and the stream re-bases, so its timeline has a step in it. Reported, not silent. | The bound exists because the gap length arrives from the client and is used as a write length. Without it one frame wrote 6.3 GB. |
+| **A client that claims a large gap on every frame** | The thirty-second cap is applied per frame and remembers nothing, so a client can ask for it 31 times a second on each stream. Measured on one stream: sixty frames carrying 1.92 s of audio produced **53 MB on disk and 1,711 s of audio at the transcription engine**, which is billed by the minute. Sustained, roughly 55 MB/s of writes. | Not fixed, and not defensible — it is the 6.3 GB fault again at a different rate. The fix is a cumulative padding budget per stream beside the per-gap one, which `StreamRecorder` already has the counter for; what is undecided is the number, and decision 27 says why choosing it badly is worse than listing it. Only a client that lies about `sampleIndex` reaches it, and only a local process can be that client — see decision 19. |
 | **Sustained double-talk on loud external speakers** | Echo cancellation is what keeps the remote participants out of the microphone transcript, and it is relaxed during double-talk so the near-end speaker is not clipped. Live calls on all three platforms show the separation holding on laptop speakers; harder conditions are untested. | Correcting it properly means an echo canceller in the desktop application, against a reference that has crossed a socket. Decision 23. |
 | **`--stt-endpoint` ships in the released binary** | A flag exists that points transcription at any endpoint. | Without it the transcription and merge path can only be exercised against a paid third party, so it had no test at all. Decision 25 argues the trade. |
 
@@ -266,6 +290,9 @@ review without making it better.
 | 23 | Transcription inside the extension, with no desktop application | Contradicts the task, which asks for a C++ desktop application |
 | 24 | Accounts and subscriptions | Product, not engineering |
 | 25 | Continuous integration | All three platforms were verified by hand; the table above says which checks ran where |
+| 25a | Automated tests for the extension | `wire.js` is covered by `tst/wire-check.mjs`, and it is the one file in the extension that decides nothing. The parts that actually break — MV3 service-worker termination, offscreen document lifetime, a real `getUserMedia` — are the parts a `chrome.*` mock does not reach, so a mock suite would test the wrong half convincingly. Doing it properly means a headless-Chrome harness, which is a project rather than an afternoon |
+| 25b | A byte-level check that the recording matches what was sent | `kobayashi-sim` sends one tone per stream so the result can be checked **by ear**, which is a human step this README asks a reviewer to perform. `tst/sessions.mjs` reads sample values back out of the WAV for the two cases it covers; generalising that to "send a known pattern, assert the file contains it" is small and is the first thing to add here |
+| 25c | A test for the 74-hour `sampleIndex` wrap | The behaviour past it is stated in the limits above and reached by no meeting, so it is a prediction rather than an observation. It is testable without a socket or a clock — `StreamRecorder` alone — and that is exactly why leaving it untested is a choice rather than a constraint |
 | 26 | Code signing and notarization | Out of scope, and noted where it bites: an unsigned bundle arriving by download is quarantined (`targets/macos.cfg`) |
 | 27 | Translations | `tr()` is used throughout, so the strings are ready; no catalogues exist |
 | 28 | Microphone-only transcription — one input, no meeting, no extension | The desktop application has no audio capture of its own. Every stream reaches it from the browser, which is what keeps it clear of WASAPI, CoreAudio and ALSA and made all three platforms nearly free (decision 4). A standalone dictation mode means adding exactly the platform audio code that decision exists to avoid. The microphone stream is already transcribed by itself if capture is started on any tab; what is missing is doing it without a browser at all |
@@ -303,9 +330,12 @@ boundary, and that this list of features should stay unbuilt.
 
 The evidence for that is deliberately in the repositories rather than in this paragraph:
 
-- **[`DESIGN.md`](DESIGN.md)** records twenty-six decisions with the alternatives rejected
-  and what each costs. Two of them supersede earlier ones, and say so; one corrects a claim
-  that turned out to be false.
+- **[`DESIGN.md`](DESIGN.md)** records twenty-nine decisions with the alternatives rejected
+  and what each costs. Two of them supersede earlier ones, and say so; three correct claims
+  that turned out to be false, and say which sentence was wrong and what replaced it.
+  Decision 28 is a decision *about* that: three separate fixes here turned out to have
+  stopped one level short of the fault they were fixing, and finding the shape they shared
+  was worth more than any of the three individually.
 - **The verification table** above states which platform ran which check, including the
   cells that were never run.
 - **The known limits** table states where this breaks and why the break is tolerated.
@@ -336,8 +366,8 @@ python3 dstOMNI/dst.py <command> [--target NAME]
 |---|---|
 | `doctor` | Reports what this machine is missing, and stops there |
 | `setup` | Creates the virtual environment, installs Conan and aqtinstall, fetches Qt |
-| `build` | Builds the desktop application |
-| `test` | Runs the unit tests, then the protocol, wire and reconnect checks against servers it starts itself |
+| `build` | Builds the desktop application. `--sanitize` also produces an instrumented tree in `bin/Sanitize` |
+| `test` | Runs the unit tests, then the protocol, wire, session and reconnect checks against servers it starts itself. `--sanitize` runs all of it against `bin/Sanitize` and fails on any sanitizer report |
 | `run` | Starts the desktop application |
 | `package` | Produces a distributable archive with CPack |
 | `status` | Commit, tag, unpushed and uncommitted counts for all three repositories |
