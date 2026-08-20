@@ -811,12 +811,18 @@ matter. It is not a substitute: it corrects the transcript after the fact and do
 nothing for the recordings, and a rule that deletes text because the other stream said
 something similar will eventually delete someone agreeing out loud.
 
-**Cost, stated plainly.** Verified only on a laptop with built-in speakers, in sessions
-of one to two minutes, on one machine — which is the exposed configuration rather than
-the safe one, so it is evidence, but it is thin evidence. Long sessions, external
-speakers, and sustained double-talk are untested. The check added here reports when the
-browser declines the constraint; it cannot report how much echo survives it, and no
-measurement of that has been made.
+**What has been run.** Live Google Meet calls on all three platforms, repeatedly, with the
+laptop's built-in speakers rather than headphones — which is the exposed configuration, not
+the safe one: on a laptop the speaker sits centimetres from the microphone, so the echo path
+is as strong as it gets. The microphone transcript did not carry the remote participants.
+That is the property, and it has held every time it was looked at.
+
+**What has not.** No measurement of *how much* echo survives, only of whether enough
+survives to be transcribed. External speakers at volume, a reverberant room, and sustained
+double-talk — where cancellation is deliberately relaxed so the near-end speaker is not
+clipped — are the conditions that would test it hardest, and none of them has been tried on
+purpose. The check added here reports when the browser declines the constraint; it cannot
+report what a browser that accepted it actually achieved.
 
 **Consequences.** A microphone that comes back without echo cancellation now says so on
 the extension badge instead of producing a quietly wrong transcript. `noiseSuppression`
@@ -970,6 +976,45 @@ The second of those took two attempts to catch. The first flapping scenario drop
 connection at exactly one second, which is before the mock reports anything — so no result
 arrived, the faulty reset never ran, and the check passed over the bug it was written for.
 A regression test that has not been shown to fail is decoration.
+
+---
+
+## 26. The feature list is closed, and written down instead
+
+**Decision.** No further features. The ones considered and not built are listed in
+[`README.md`](README.md), each with its reason, and the three that would come first are
+named in order.
+
+**Context.** The obvious way to make a submission look substantial is to add to it. A
+transcript exporter, dark mode, a tray icon, hotkeys, a recordings browser, cloud sync —
+each is an afternoon, and with AI assistance rather less than that.
+
+That is exactly why they are not here. This project was written with heavy AI assistance,
+which the task permits on the condition that the candidate orchestrates it. Under that
+condition code is the cheap part, and the scarce part is what can be attributed to a
+person: the architecture, the trade-offs, and the evidence that each was tested rather than
+assumed. A feature generated from a prompt adds nothing to that column. It adds a great
+deal to the other one — more surface for a reviewer to read, more places for something to
+be subtly wrong, and a longer path between them and the decisions that are actually mine.
+
+There is a second cost, less obvious. Every feature is a claim that it works, and this
+project's claims are backed by having run them on three machines. Twenty features means
+twenty more things to verify on each, or a submission whose verification table has quietly
+become aspirational.
+
+**Rejected — building the small ones anyway.** Transcript export in particular is a real
+absence and a genuinely small change. Left out because the boundary is only worth anything
+if it holds: a list of things not built, minus the easy ones, is just a backlog.
+
+**Rejected — saying nothing about it.** Then every absence reads as an oversight, and the
+most interesting ones — no LLM though the task allows it, no CI, a transcript that is never
+saved — look like things that were not thought about.
+
+**Consequences.** The submission is smaller than it could be. The features are recorded
+rather than built, which means the reasoning is reviewable even though the code is not.
+Several entries are stopping points rather than positions — the single light palette, and
+syncing with the meeting's microphone button, which was built once and removed when it
+proved to depend on the structure of someone else's page.
 
 ---
 

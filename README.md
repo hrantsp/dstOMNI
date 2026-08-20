@@ -170,6 +170,7 @@ interleaved in order.
 | `setup`, `build`, unit tests | yes | yes | yes |
 | `--selftest` | yes | yes | yes |
 | Live call, both streams transcribed | yes | yes | yes |
+| Microphone free of the meeting's audio, on speakers | yes | yes | yes |
 | Application icon and window identity | yes | yes | yes |
 | Starts by double-click, no console | n/a | yes | yes |
 | TLS backend in use | OpenSSL | Secure Channel | OpenSSL |
@@ -204,6 +205,121 @@ without it any web page open in any browser could connect to a running Kobayashi
 you were in a meeting. `--origin` overrides the list; `--token` adds a shared secret on
 top. The reasoning, and the gaps deliberately left, are in decision 19 of
 [`DESIGN.md`](DESIGN.md).
+
+---
+
+## Known limits
+
+Things this does not do, or does badly, that are worth knowing before you rely on it.
+Each is a deliberate stopping point rather than an oversight, and each says what would
+have to change.
+
+| Limit | What happens | Why it stays |
+|---|---|---|
+| **A capture longer than ~74 hours** | `sampleIndex` is a `u32` at 16 kHz, so it wraps. Past the wrap every frame reads as going backwards, is discarded under `PROTOCOL.md` §5.3, and that stream stops recording and transcribing. The discarded count in the session summary is what shows it. | The field is part of the wire format, so widening it is a protocol version bump shipped on both sides. The clock belongs to one `AudioContext`, created when capture starts, so this is 74 hours of one unbroken capture — not an install lifetime. |
+| **A recording longer than ~37 hours** | RIFF sizes are `u32`, so the WAV header wraps past 4 GB and the file's declared length stops matching its contents. Reached before the limit above. | A larger container — RF64 or WAV64 — for a duration no meeting reaches. |
+| **A transcription connection that recovers after a long outage** | While a stream is stalled the other commits past it. If it then returns with text from before that point, the text is appended after lines it should have preceded. | The alternative is a transcript frozen for the rest of the call, which is worse and looks like the application being broken. Decision 13 has the reasoning. |
+| **More than about thirty seconds of lost audio in one gap** | Padding stops and the stream re-bases, so its timeline has a step in it. Reported, not silent. | The bound exists because the gap length arrives from the client and is used as a write length. Without it one frame wrote 6.3 GB. |
+| **Sustained double-talk on loud external speakers** | Echo cancellation is what keeps the remote participants out of the microphone transcript, and it is relaxed during double-talk so the near-end speaker is not clipped. Live calls on all three platforms show the separation holding on laptop speakers; harder conditions are untested. | Correcting it properly means an echo canceller in the desktop application, against a reference that has crossed a socket. Decision 23. |
+| **`--stt-endpoint` ships in the released binary** | A flag exists that points transcription at any endpoint. | Without it the transcription and merge path can only be exercised against a paid third party, so it had no test at all. Decision 25 argues the trade. |
+
+The security posture — unencrypted recordings, a plaintext API key, no token by default,
+`ws://` on loopback — is a separate list, with its reasoning, in decision 19 of
+[`DESIGN.md`](DESIGN.md).
+
+---
+
+## What is not here, and why
+
+Everything below could be built, and several would take an afternoon. None of it is here,
+and that is a decision rather than a backlog. Decision 26 in [`DESIGN.md`](DESIGN.md) has
+the reasoning; the short version is that this project was written with heavy AI assistance,
+so code is the cheap part. What is not cheap is the part that can be attributed to me —
+the architecture, the trade-offs, and the evidence that each was tested rather than
+assumed. More features would add more that I did not decide, and would make this longer to
+review without making it better.
+
+**Transcript.** It is shown and never saved: no export to text, SRT, VTT or JSON, and no
+persistence between sessions. Only the audio is written. No LLM anywhere, though the task
+permits one — summaries and action items are a different product from a transcript that
+keeps two speakers apart. No renaming a stream from "Meeting" to a person's name, and no
+naming of individual remote participants; `--diarize` labels voices within the meeting
+stream but does not identify them.
+
+**Interface.** A single light palette on all three platforms, which is a stopping point
+and not a position — dark mode belongs here, and the palette is deliberate only because a
+half-applied theme is worse than either whole one. No always-on-top, no custom
+disappearing title bar, no background blur or opacity, no tray icon, no global hotkeys, no
+recordings browser, no playback of an existing recording with re-transcription. No manual
+reconnect button, because the transcription link already reconnects by itself (decision
+25) and a button would only offer to do what is already happening.
+
+**Recording lifecycle.** No sharing, no cloud sync, and no ring buffer keeping the last N
+minutes. `--no-record` exists; everything beyond it is product.
+
+**Platform and packaging.** CPack produces an archive per platform, not an installer: no
+MSI or NSIS on Windows, no signed and notarized `.dmg`, no AppImage, no portable build.
+There is no single artifact for all three and cannot be — Qt's deployment tools run only
+on their own operating system (decision 5) — so this means one installer per platform,
+each built on it.
+
+**Integration.** No syncing capture with the Google Meet microphone button. That one was
+built and removed: it depended on the structure of Meet's DOM, broke when it changed, and
+a feature that silently stops working is worse than one that is absent. No meeting
+metadata — title, participants, start time — gathered from the tab and sent to the
+application. No Zoom or Teams. No transcription inside the extension without a desktop
+application, which would contradict the task.
+
+**Engineering.** No CI: all three platforms were verified by hand, and the record of what
+was run where is above. No translations, though `tr()` is used throughout so the strings
+are ready for them. No local speech-to-text — Whisper running on the machine would remove
+the third-party dependency entirely, and is the most interesting thing on this list. No
+microphone selection; the system default is used. One session at a time — a second
+connection replaces the first. Two streams, though the protocol's stream byte addresses
+256.
+
+**Product.** No accounts, no subscriptions.
+
+### What would come first
+
+Not a wish list; an order.
+
+1. **Persisting and exporting the transcript.** The most conspicuous absence, the smallest
+   change, and the one that makes the recordings useful to anyone who was not in the room.
+2. **Syncing with the Meet microphone button.** Not polish — a muted microphone that is
+   still transcribed puts words on the wrong side of a conversation, which is the one
+   thing this application exists to get right. It needs an approach that does not depend
+   on someone else's DOM.
+3. **Continuous integration.** Three platforms are verified by hand today, and the table
+   above is only true on the day it was written.
+
+---
+
+## How this was built
+
+The task permits AI assistance provided the candidate orchestrates it. This was written
+that way, and it is worth being exact about what that means rather than leaving it to be
+inferred.
+
+Most of the code here was written by an AI agent. The architecture, the scope, and every
+trade-off in [`DESIGN.md`](DESIGN.md) were decided by me, and the parts of this repository
+that took the longest are the parts that are not code: deciding that the protocol should be
+owned by one side and generated into the other, that ordering should rest on a
+finalisation watermark rather than a fixed delay, that the origin check is the security
+boundary, and that this list of features should stay unbuilt.
+
+The evidence for that is deliberately in the repositories rather than in this paragraph:
+
+- **[`DESIGN.md`](DESIGN.md)** records twenty-six decisions with the alternatives rejected
+  and what each costs. Two of them supersede earlier ones, and say so; one corrects a claim
+  that turned out to be false.
+- **The verification table** above states which platform ran which check, including the
+  cells that were never run.
+- **The known limits** table states where this breaks and why the break is tolerated.
+
+Several of the bugs found late — a framework Apple deleted, a working directory Finder
+never sets, a first capture lost to a module that had not finished loading — appeared only
+by running the thing on real machines. That is the part no amount of prompting produces.
 
 ---
 
