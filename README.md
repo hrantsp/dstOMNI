@@ -310,9 +310,19 @@ The evidence for that is deliberately in the repositories rather than in this pa
   cells that were never run.
 - **The known limits** table states where this breaks and why the break is tolerated.
 
-Several of the bugs found late — a framework Apple deleted, a working directory Finder
-never sets, a first capture lost to a module that had not finished loading — appeared only
-by running the thing on real machines. That is the part no amount of prompting produces.
+Several of the bugs found late appeared only by running the thing, in states nobody had
+thought to try. A framework Apple deleted. A working directory Finder never sets. A first
+capture lost to a module that had not finished loading. A use-after-free that crashed the
+application on teardown whenever the transcription socket had not finished connecting —
+reached by a wrong API key, no network, or simply stopping early. Saving the settings
+dialog, which rebuilt the server's configuration from defaults and so emptied the origin
+allowlist, locking the extension out for the rest of the run — on the exact path this
+README tells a reviewer to take. One frame with an implausible position, which made the
+recorder write six gigabytes of silence to disk before anyone could stop it.
+
+None of those is visible in the code. Each was found by putting the application in a state
+it had not been in before and watching what it did. That is the part no amount of prompting
+produces, and it is most of what took the time.
 
 ---
 
